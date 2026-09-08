@@ -1,0 +1,28 @@
+line_navigator_node:
+  ros__parameters:
+    # --- R3/R4: walk then pause, repeat ---
+    walk_duration: 5.0
+    pause_duration: 5.0
+
+    # --- R2/R7: line following ---
+    linear_speed: 0.6
+    angular_speed: 0.8
+    cross_track_kp: 1.2          # steer-back gain per metre off the line
+    max_correction_deg: 60.0     # cap on how hard it cuts back
+    heading_kp: 1.5
+    on_line_threshold: 0.20      # within this, treat as on the line
+    goal_tolerance: 0.25
+    goal_approach_distance: 1.0
+
+    # --- R5/R6: obstacle avoidance ---
+    safe_distance: 1.2
+    clear_distance: 1.5
+    cone_angle_deg: 30.0
+    direction_scan_deg: 90.0
+    clearing_distance: 1.5
+
+    stall_timeout: 20.0
+    stall_min_progress: 0.15
+
+    reference_frame: "odom"
+    robot_frame: "base_link"

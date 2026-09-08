@@ -1,0 +1,77 @@
+### State estimation WITHOUT wheel encoders.
+###
+### The task forbids any wheel feedback, which removes the entire odometry
+### source used previously. What remains is an IMU, a 2D LiDAR, and knowledge of
+### what we ourselves commanded.
+###
+### The split below follows what was measured on this rover against Gazebo
+### ground truth:
+###   - commanded FORWARD distance matched reality at 98-102% over a 10 m run
+###   - commanded ROTATION matched reality at only ~40%, because a skid-steer
+###     must scrub its wheels sideways to turn
+###
+### So forward velocity is taken from the command we issued (twist0) and heading
+### is taken from the IMU (imu0), each supplying the quantity it is good at.
+### Nothing here reads a wheel.
+###
+### twist0 is our own control output, not a sensor: it is what we asked the
+### wheels to do. It is an open-loop motion prior, and it drifts. Bounding that
+### drift needs an absolute reference, which on this robot means matching LiDAR
+### scans against environmental features — impossible in a featureless world.
+### See the README.
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom              # publishes odom -> base_link
+
+    # --- commanded velocity as the translation prior ---
+    twist0: /cmd_vel_prior
+    #               x      y      z
+    #               roll   pitch  yaw
+    #               vx     vy     vz
+    #               vroll  vpitch vyaw
+    #               ax     ay     az
+    twist0_config: [false, false, false,
+                    false, false, false,
+                    true,  false, false,
+                    false, false, false,
+                    false, false, false]
+    twist0_differential: false
+    twist0_relative: false
+    twist0_queue_size: 10
+
+    # --- IMU supplies heading and yaw rate ---
+    imu0: /imu/data_cov
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    process_noise_covariance: [0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.05, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.06, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.03, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.025, 0.0, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.04, 0.0,  0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,  0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.005, 0.0, 0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,  0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.01, 0.0,
+                               0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.015]

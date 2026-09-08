@@ -1,0 +1,51 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 30
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    diff_drive_controller:
+      type: diff_drive_controller/DiffDriveController
+
+diff_drive_controller:
+  ros__parameters:
+    left_wheel_names: ["wheel_front_left_joint", "wheel_rear_left_joint"]
+    right_wheel_names: ["wheel_front_right_joint", "wheel_rear_right_joint"]
+
+    wheel_separation: 0.56
+    wheel_radius: 0.15
+    wheel_separation_multiplier: 1.18
+
+    publish_rate: 30.0
+    odom_frame_id: odom
+    base_frame_id: base_link
+
+    # === NO WHEEL ODOMETRY (task constraint) ===
+    # A four-wheel rover needs ros2_control to actuate at all: the simple
+    # diff-drive Gazebo plugin refuses more than one joint per side. Any
+    # simulated actuator necessarily closes a velocity loop on joint state, so
+    # the controller reads the wheels to *drive* them.
+    #
+    # What is guaranteed is that no wheel-derived odometry reaches localisation:
+    # this line stops the controller publishing odom -> base_link, and nothing
+    # in this package subscribes to /diff_drive_controller/odom. The odom frame
+    # is published by ekf_filter_node from the IMU and the commanded velocity
+    # only — see config/ekf.yaml.
+    enable_odom_tf: false
+
+    cmd_vel_timeout: 0.5
+    use_stamped_vel: false
+
+    linear:
+      x:
+        has_velocity_limits: true
+        max_velocity: 1.0
+        has_acceleration_limits: true
+        max_acceleration: 2.0
+    angular:
+      z:
+        has_velocity_limits: true
+        max_velocity: 0.9
+        has_acceleration_limits: true
+        max_acceleration: 3.0
