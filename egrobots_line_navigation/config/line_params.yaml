@@ -9,6 +9,10 @@ line_navigator_node:
     angular_speed: 0.8
     cross_track_kp: 1.2          # steer-back gain per metre off the line
     max_correction_deg: 60.0     # cap on how hard it cuts back
+    return_angular_speed: 0.3    # pivot rate while cutting back after a detour
+    return_max_correction_deg: 30.0  # shallower cut-back -> smaller pivots
+    align_tolerance_deg: 4.0     # pivot until within this, then drive straight
+    cross_track_deadband: 0.05   # ignore smaller offsets; avoids pivoting on noise
     heading_kp: 1.5
     on_line_threshold: 0.20      # within this, treat as on the line
     goal_tolerance: 0.25

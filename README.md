@@ -103,9 +103,18 @@ ros2 action send_goal -f /follow_line egrobots_line_interfaces/action/FollowLine
 
 `-f` streams feedback: distance to goal, progress along the line, **signed
 cross-track error**, phase (`WALKING` / `PAUSED` / `AVOIDING` / `RETURNING`), and
-iteration count. `Ctrl+C` cancels the goal. Add `rviz:=false` to skip RViz.
+iteration count. `Ctrl+C` cancels the goal. Add `rviz:=false` to skip RViz, and
+`gui:=false` to run Gazebo headless (no OpenGL — useful when the graphics stack
+is unavailable; physics and the CPU ray LiDAR are unaffected).
 
 Obstacles are not in the world; add them from the Gazebo GUI.
+
+To record the estimate against ground truth while a goal runs:
+
+```bash
+ros2 run egrobots_line_navigation pose_logger_node --ros-args \
+  -p use_sim_time:=true -p period:=0.05 -p csv_path:=/home/$USER/run.csv
+```
 
 ---
 
@@ -117,6 +126,7 @@ Obstacles are not in the world; add them from the Gazebo GUI.
 | `cmd_prior_node` | Republishes the commanded velocity as a stamped, covariance-bearing twist for the EKF |
 | `imu_relay_node` | Adds realistic covariances to Gazebo's IMU stream |
 | `ekf_filter_node` | `robot_localization`, fusing the two into `odom → base_link` |
+| `pose_logger_node` | Prints/records the estimated pose beside ground truth, with along- and cross-track error (evaluation only) |
 
 ---
 
@@ -180,10 +190,19 @@ while Gazebo stamped sim time gave the filter a `dt` of ~1.79 billion seconds
 between inputs, integrating velocity across it to produce a 1.6e8 m estimate.
 Every node in the launch now sets `use_sim_time`.
 
-**Turn to face, then drive.** Beyond a heading error of 45° the rover pivots
-rather than arcing. Rotation is where nearly all of this platform's estimation
-error originates, so minimising *total* rotation matters more than the fact that
-a pivot scrubs harder per degree.
+**Rotate or translate — never both at once.** The rover pivots in place until
+within `align_tolerance_deg` (4°) of the target bearing, then drives straight.
+Driving while the heading is still changing integrates distance along an
+out-of-date heading, and with no absolute reference that error is never
+recovered. A `cross_track_deadband` (5 cm) stops it pivoting for noise.
+
+**Cut back to the line gently after a detour.** The return is where a skid-steer
+pivots while displaced from the line, and the sideways slide during those pivots
+is invisible to the estimator — logged runs showed a single return adding ~20 cm
+of cross-track error. During the return the pivot rate drops to
+`return_angular_speed` (0.3 rad/s, from 0.8) and the cut-back angle is capped at
+`return_max_correction_deg` (30°, from 60°), which also halves the realignment
+pivot at the line. Walking and avoidance turns keep their normal values.
 
 **Obstacle avoidance outranks everything, including the pause.** It reads only
 the LiDAR and never waits on the cycle timer or the estimator.

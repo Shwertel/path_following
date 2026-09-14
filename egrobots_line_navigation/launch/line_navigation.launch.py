@@ -21,7 +21,8 @@ def generate_launch_description():
     simulation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_share, 'launch', 'simulation.launch.py')),
-        launch_arguments={'rviz': LaunchConfiguration('rviz')}.items())
+        launch_arguments={'rviz': LaunchConfiguration('rviz'),
+                          'gui': LaunchConfiguration('gui')}.items())
 
     navigator = Node(
         package='egrobots_line_navigation',
@@ -35,6 +36,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('gui', default_value='true'),
         simulation,
         navigator,
     ])

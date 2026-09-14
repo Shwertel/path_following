@@ -24,16 +24,21 @@ def generate_launch_description():
     rviz_config = os.path.join(pkg_share, 'rviz', 'egrobots_rover.rviz')
 
     use_rviz = LaunchConfiguration('rviz')
+    use_gui = LaunchConfiguration('gui')
     robot_description = ParameterValue(Command(['xacro ', xacro_path]), value_type=str)
 
     gazebo_pkg = get_package_share_directory('gazebo_ros')
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gazebo_pkg, 'launch', 'gazebo.launch.py')),
-        launch_arguments={'world': world_path}.items())
+        launch_arguments={'world': world_path, 'gui': use_gui}.items())
 
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
+        # gui:=false runs Gazebo headless - no gzclient, no OpenGL. Useful when
+        # the graphics stack is unavailable; the LiDAR is a CPU ray sensor, so
+        # physics and sensing are unaffected.
+        DeclareLaunchArgument('gui', default_value='true'),
         gazebo_launch,
         Node(package='robot_state_publisher', executable='robot_state_publisher',
              name='robot_state_publisher', output='screen',

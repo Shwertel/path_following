@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'line_navigator_node = egrobots_line_navigation.line_navigator_node:main',
             'cmd_prior_node = egrobots_line_navigation.cmd_prior_node:main',
+            'pose_logger_node = egrobots_line_navigation.pose_logger_node:main',
             'imu_relay_node = egrobots_line_navigation.imu_relay_node:main',
             'manual_controller = egrobots_line_navigation.manual_controller:main',
         ],

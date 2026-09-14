@@ -30,7 +30,7 @@ class ImuRelayNode(Node):
 
         self.declare_parameter('input_topic', '/imu/data')
         self.declare_parameter('output_topic', '/imu/data_cov')
-        self.declare_parameter('yaw_variance', 0.002)
+        self.declare_parameter('yaw_variance', 0.0001)
         self.declare_parameter('yaw_rate_variance', 0.001)
         self.declare_parameter('accel_variance', 0.05)
 

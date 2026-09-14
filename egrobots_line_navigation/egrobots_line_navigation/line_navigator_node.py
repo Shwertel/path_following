@@ -60,6 +60,16 @@ class LineNavigator(Node):
         self.declare_parameter('angular_speed', 0.8)
         self.declare_parameter('cross_track_kp', 1.2)
         self.declare_parameter('max_correction_deg', 60.0)
+        # Gentler steering while cutting back to the line after a detour. The
+        # return is where a skid-steer pivots while displaced from the line, and
+        # the sideways slide during those pivots is invisible to the estimator.
+        self.declare_parameter('return_angular_speed', 0.3)
+        self.declare_parameter('return_max_correction_deg', 30.0)
+        # Pivot until within this of the target bearing, then drive straight.
+        self.declare_parameter('align_tolerance_deg', 4.0)
+        # Ignore cross-track error smaller than this, so the rover does not stop
+        # and pivot for noise.
+        self.declare_parameter('cross_track_deadband', 0.05)
         self.declare_parameter('heading_kp', 1.5)
         self.declare_parameter('on_line_threshold', 0.20)
         self.declare_parameter('goal_tolerance', 0.25)
@@ -272,18 +282,38 @@ class LineNavigator(Node):
 
         return False
 
-    def steer_towards(self, cmd, desired_heading, speed):
-        angular_speed = self.get_parameter('angular_speed').value
+    def steer_towards(self, cmd, desired_heading, speed, angular_speed=None):
+        """Either rotate or translate — never both at once.
+
+        Measured against ground truth on this rover, driving while turning costs
+        roughly 70x more position error per metre than driving straight:
+
+            straight        0.00031 m/m   ->  0.03 m over 100 m
+            arc (wz 0.35)   0.02174 m/m   ->  2.17 m over 100 m
+
+        Every metre covered while the heading is still changing is integrated
+        along a heading that is out of date, and the error is unrecoverable
+        because nothing observes absolute position. Pivoting first costs time
+        but keeps the whole driven path in the cheap regime.
+        """
+        if angular_speed is None:
+            angular_speed = self.get_parameter('angular_speed').value
         heading_kp = self.get_parameter('heading_kp').value
+        tolerance = math.radians(self.get_parameter('align_tolerance_deg').value)
+
         _, _, yaw, _ = self.pose()
         error = math.atan2(math.sin(desired_heading - yaw),
                            math.cos(desired_heading - yaw))
-        cmd.angular.z = max(-angular_speed, min(angular_speed, heading_kp * error))
-        # Turn on the spot when badly misaligned rather than driving a wide arc.
-        cmd.linear.x = 0.0 if abs(error) > math.radians(45.0) else speed
+
+        if abs(error) > tolerance:
+            cmd.angular.z = max(-angular_speed, min(angular_speed, heading_kp * error))
+            cmd.linear.x = 0.0
+        else:
+            cmd.angular.z = 0.0
+            cmd.linear.x = speed
         return error
 
-    def follow_line_step(self, cmd, cross):
+    def follow_line_step(self, cmd, cross, returning=False):
         """Steer along the line, biased by how far off it we are.
 
         The correction angle is proportional to cross-track error, so a rover on
@@ -291,10 +321,28 @@ class LineNavigator(Node):
         angle that grows with the displacement.
         """
         kp = self.get_parameter('cross_track_kp').value
-        max_correction = math.radians(self.get_parameter('max_correction_deg').value)
-        correction = max(-max_correction, min(max_correction, -kp * cross))
-        return self.steer_towards(cmd, self.line_heading() + correction,
-                                  self.get_parameter('linear_speed').value)
+        if returning:
+            max_correction = math.radians(
+                self.get_parameter('return_max_correction_deg').value)
+            angular_speed = self.get_parameter('return_angular_speed').value
+        else:
+            max_correction = math.radians(self.get_parameter('max_correction_deg').value)
+            angular_speed = None
+        deadband = self.get_parameter('cross_track_deadband').value
+
+        # Inside the deadband, aim straight down the line rather than chasing a
+        # correction. Without this the desired heading twitches with every
+        # centimetre of cross-track noise, and since a heading change now means
+        # a pivot, the rover would stop and turn constantly instead of driving.
+        if abs(cross) < deadband:
+            desired = self.line_heading()
+        else:
+            correction = max(-max_correction, min(max_correction, -kp * cross))
+            desired = self.line_heading() + correction
+
+        return self.steer_towards(cmd, desired,
+                                  self.get_parameter('linear_speed').value,
+                                  angular_speed)
 
     def stop(self):
         self.cmd_publisher.publish(Twist())
@@ -410,7 +458,7 @@ class LineNavigator(Node):
                 elif abs(cross) > on_line:
                     # --- R7: off the line after a detour, cut back to it ---
                     phase = 'RETURNING'
-                    self.follow_line_step(cmd, cross)
+                    self.follow_line_step(cmd, cross, returning=True)
                 else:
                     # --- R2/R4: walking along the line ---
                     if phase != 'WALKING':
