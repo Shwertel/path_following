@@ -34,19 +34,20 @@ of what we ourselves commanded.
 
 ```
 cmd_vel (our own control output) ──┐
-                                   ├──► EKF ──► odom → base_link
-IMU heading (/imu/data) ───────────┘
+IMU heading (/imu/data) ───────────┼──► EKF ──► odom → base_link
+car rows, measured by the LiDAR ───┘
+  (road world only: sideways position + heading)
 ```
 
 The split follows what was measured on this rover against ground truth:
 
-| Source | Forward distance | Rotation |
-|---|---|---|
-| Commanded velocity | **98–102% accurate** | ~40% (skid-steer scrub) |
-| IMU | — | direct measurement, unaffected by scrub |
+| Source | Forward distance | Sideways position | Rotation |
+|---|---|---|---|
+| Commanded velocity | **98–102% accurate** | not observed | ~40% (skid-steer scrub) |
+| IMU | — | — | direct measurement, unaffected by scrub |
+| Car rows (LiDAR) | not observed | **direct, drift-free** | direct, drift-free |
 
-So forward velocity comes from the command we issued, and heading comes from the
-IMU. Each supplies the quantity it is good at, and **no wheel is read**.
+Each source supplies the quantity it is good at, and **no wheel is read**.
 
 `enable_odom_tf: false` stops the drive controller publishing `odom → base_link`,
 and nothing in this package subscribes to `/diff_drive_controller/odom`.
@@ -84,7 +85,70 @@ displaced one cuts back at an angle that grows with the displacement.
 
 ---
 
-## 4. Build & Run
+## 4. Measuring position against the parked cars
+
+The deployment environment is a straight road lined with parked cars on both
+sides, and the path is its centreline. `road_world.world` models it: cars
+4.5 × 1.8 × 1.5 m, 1 m apart, inner edges at y = ±3.0 m (a 6 m lane), with one
+car missing from each row to leave wider gaps.
+
+```
+ +3.9  [car][car][car] [car][car]   [car][car]      ← left row
+  0.0  A ─────────── ▣ obstacle ──────────── B      ← path = road centreline
+ -3.9  [car][car]   [car][car][car][car] [car]      ← right row
+```
+
+Every scan, `row_localizer_node`:
+
+1. **Keeps only points near where each row should be.** It predicts each row's
+   position from the current estimate and discards points more than
+   `gate_width` (0.6 m) away. This excludes an obstacle the rover is swerving
+   around, which otherwise lands on the same side as a row.
+2. **Fits a straight line to each row** — RANSAC, then a least-squares refinement
+   on the inliers. Gaps between cars just mean fewer points.
+3. **Turns the two lines into two measurements.** With the road direction at
+   angle `beta` in the robot frame and its left normal `nL`:
+
+   ```
+   s_L = nL · p_left   =  W/2 - e       offset of the left row
+   s_R = nL · p_right  = -W/2 - e       offset of the right row
+
+   e   = -(s_L + s_R) / 2               rover's offset left of the centreline
+   psi = -beta                          rover's heading relative to the road
+   ```
+
+   If only one row passes the quality checks (≥12 inliers covering ≥2 m of
+   road), that row and the known lane width are used instead, with doubled
+   uncertainty. If neither does, nothing is published for that scan and the EKF
+   coasts on the IMU and commanded velocity.
+
+The road itself is **anchored in odom from the first scans**, while the rover is
+still at its start pose and odom is exact: lane width, the rover's offset from
+the centre, and the road's direction are measured, not hard-coded. The centreline
+is published latched on `/road_centreline`, and the navigator projects A and B
+onto it — **A and B say where to start and stop; the car rows say where the path
+runs sideways**.
+
+The measurement reaches the EKF as `/row_pose` with its covariance **rotated so
+it is tight across the road and very loose along it** (σ 0.05 m across, 50 m
+along). Parked cars pin down how far the rover is from the centreline, not how
+far along the road it is.
+
+Checked against ground truth before any full run, by forcing the rover through
+the hard pivots that previously caused the slide:
+
+| Manoeuvre | EKF sideways error vs truth |
+|---|---|
+| Pivot left 85°, drive to y ≈ 1.3 m, pivot back | 0.1–0.3 cm |
+| 5 m straight while offset | 0.0 cm |
+| Pivot right 85°, drive to y ≈ −0.3 m, pivot back | 0.0–0.2 cm |
+
+The row measurement itself stayed within 1 mm and 0.03° of truth, including
+while the rover sat side-on to the rows at ±92°.
+
+---
+
+## 5. Build & Run
 
 ```bash
 cd ~/ros2_ws
@@ -92,9 +156,19 @@ colcon build --packages-select egrobots_line_interfaces egrobots_line_navigation
 source install/setup.bash
 ```
 
+In the road world (row correction on by default):
+
 ```bash
-ros2 launch egrobots_line_navigation line_navigation.launch.py
+ros2 launch egrobots_line_navigation line_navigation.launch.py world:=road_world.world
 ```
+
+Place obstacles at fixed positions, so repeated runs are comparable:
+
+```bash
+ros2 run egrobots_line_navigation spawn_obstacles --ros-args -p layout:=road
+```
+
+Send the goal:
 
 ```bash
 ros2 action send_goal -f /follow_line egrobots_line_interfaces/action/FollowLine \
@@ -103,11 +177,16 @@ ros2 action send_goal -f /follow_line egrobots_line_interfaces/action/FollowLine
 
 `-f` streams feedback: distance to goal, progress along the line, **signed
 cross-track error**, phase (`WALKING` / `PAUSED` / `AVOIDING` / `RETURNING`), and
-iteration count. `Ctrl+C` cancels the goal. Add `rviz:=false` to skip RViz, and
-`gui:=false` to run Gazebo headless (no OpenGL — useful when the graphics stack
-is unavailable; physics and the CPU ray LiDAR are unaffected).
+iteration count. `Ctrl+C` cancels the goal.
 
-Obstacles are not in the world; add them from the Gazebo GUI.
+Launch arguments:
+
+| Argument | Default | Effect |
+|---|---|---|
+| `world` | `egrobots_world.world` | `road_world.world` for the parked-car road |
+| `row_correction` | `true` | `false` keeps the road centreline but sends the EKF no row measurement — for comparison runs |
+| `rviz` | `true` | `false` skips RViz |
+| `gui` | `true` | `false` runs Gazebo headless (no OpenGL); physics and the CPU ray LiDAR are unaffected |
 
 To record the estimate against ground truth while a goal runs:
 
@@ -118,19 +197,23 @@ ros2 run egrobots_line_navigation pose_logger_node --ros-args \
 
 ---
 
-## 5. Nodes
+## 6. Nodes
 
 | Node | Purpose |
 |---|---|
 | `line_navigator_node` | The `FollowLine` action server: line following, walk/pause cycle, avoidance, arrival |
 | `cmd_prior_node` | Republishes the commanded velocity as a stamped, covariance-bearing twist for the EKF |
 | `imu_relay_node` | Adds realistic covariances to Gazebo's IMU stream |
-| `ekf_filter_node` | `robot_localization`, fusing the two into `odom → base_link` |
-| `pose_logger_node` | Prints/records the estimated pose beside ground truth, with along- and cross-track error (evaluation only) |
+| `row_localizer_node` | Fits the parked-car rows; publishes sideways position and heading for the EKF, and the road centreline |
+| `ekf_filter_node` | `robot_localization`, fusing the inputs into `odom → base_link` |
+| `pose_logger_node` | Prints/records the estimated pose beside ground truth (evaluation only) |
+| `spawn_obstacles` | Spawns obstacles at fixed, named layouts (evaluation only) |
 
 ---
 
-## 6. Measured Results
+## 7. Measured Results
+
+### Empty world — IMU and commanded velocity only
 
 100 m line, five obstacles, ten avoidance manoeuvres, scored against Gazebo
 ground truth:
@@ -155,18 +238,79 @@ travelled     err     err%
     104.6   0.374   0.36%
 ```
 
-Absolute error grows, but **as a fraction of distance it stays near 0.5% and does
-not accelerate**. All ten avoidance manoeuvres are invisible in the error column:
-the rover swings 1.4 m off the line, returns, and the estimate never steps.
+Absolute error grows, but as a fraction of distance it stays near 0.5%. Later
+logged runs showed where the remaining sideways error comes from: not creep along
+the straights, but **steps during the return turn after a detour** — one return
+added ~20 cm, which then stayed flat for the rest of the run. That is the slide a
+skid-steer makes while pivoting, which neither the IMU nor the commanded velocity
+can observe.
 
 For contrast, the same rover in the previous task — with heading from wheel
-odometry — lost **2.3 m to a single avoidance turn**. Removing wheel odometry
-made return-to-line *more* accurate, not less, because IMU heading is unaffected
-by the sideways scrub a skid-steer needs in order to turn.
+odometry — lost **2.3 m to a single avoidance turn**.
+
+### Road world — with and without the car-row correction
+
+30 m goal, three obstacles at identical fixed positions (centre, +0.4 m, −0.4 m),
+six runs alternated ON / OFF, scored against Gazebo ground truth. All six runs
+reached B. The only difference between the two sets is whether `/row_pose`
+reaches the EKF (`row_correction`); both follow the road centreline.
+
+| Run | Worst sideways error added by one detour | Max estimator sideways error | Final estimator sideways error | **True deviation from path at finish** | True distance to B |
+|---|---|---|---|---|---|
+| ON 1  | 4.4 cm  | 8.2 cm  | 0.2 cm  | **2.2 cm**  | 17.0 cm |
+| ON 2  | 5.5 cm  | 9.3 cm  | 0.1 cm  | **1.9 cm**  | 25.1 cm |
+| ON 3  | 3.5 cm  | 6.8 cm  | 0.2 cm  | **3.2 cm**  | 9.0 cm  |
+| OFF 1 | 9.6 cm  | 14.1 cm | 1.5 cm  | **2.2 cm**  | 28.0 cm |
+| OFF 2 | 23.3 cm | 37.2 cm | 23.7 cm | **22.7 cm** | 43.1 cm |
+| OFF 3 | 24.6 cm | 22.1 cm | 6.7 cm  | **7.9 cm**  | 85.4 cm |
+
+| | ON (n=3) | OFF (n=3) |
+|---|---|---|
+| True deviation from path at finish, mean | **2.4 cm** (range 1.9–3.2) | **11.0 cm** (range 2.2–22.7) |
+| Max estimator sideways error, mean | 8.1 cm | 24.5 cm |
+| True distance to B, mean | 17.0 cm | 52.2 cm |
+
+What the correction changes is not that the rover stops sliding — each detour
+still briefly puts the estimate off by up to 5 cm — but that the error no longer
+**persists**. With the rows fused, the final estimator error was 0.1–0.2 cm in
+every run; without them it ranged up to 23.7 cm and was carried to the finish.
+That shows up as consistency: every ON run finished within 3.2 cm of the path,
+while OFF ranged from 2.2 cm (a run whose detour errors happened to cancel) to
+22.7 cm.
+
+Three runs per condition is a small sample, and the along-road distance to B is
+not directly corrected by the rows, so its improvement should not be read as
+more than an indication.
 
 ---
 
-## 7. Design Decisions
+## 8. Design Decisions
+
+**Measure the slide instead of trying to prevent it.** Slowing the return turn
+(0.3 rad/s, 30° cut-back) did reduce the slide in simulation, but the real robot
+is heavy and its motors cannot turn that slowly, so that change was reverted:
+`return_angular_speed` and `return_max_correction_deg` now equal the normal
+turning values. The car-row measurement removes the need — the rover turns at
+full speed, slides, and the slide is measured and corrected within a scan or two.
+
+**Sideways only, not a full pose.** Parked cars constrain the rover's distance
+from the centreline and its heading, but a row of similar cars looks nearly the
+same as you slide along it. Rather than trust a weak along-road estimate, the
+measurement's covariance is rotated to be tight across the road and loose along
+it, and the EKF keeps its own along-road estimate from commanded velocity.
+
+**The road is measured at start-up, not hard-coded.** Lane width, direction and
+the rover's starting offset are taken from the first scans, while odom is still
+exact. The same code works for any straight road of any width.
+
+**Row points are gated by prediction.** During a detour the obstacle can sit on
+the same side as a row. Keeping only points near the predicted row line — then
+fitting with RANSAC — stops it biasing the fit. If the two fitted rows disagree
+about the lane width, the one closer to its prediction is kept.
+
+**The path is the road centre.** A and B are projected onto the measured
+centreline, so a goal given slightly off-centre still follows the middle of the
+lane between the cars.
 
 **The motion prior must be a continuous stream, not one message per command.**
 `cmd_prior_node` originally published only when a command arrived. A Kalman
@@ -175,15 +319,14 @@ last estimate through the process model with nothing to correct it. The estimate
 free-ran between command bursts and ran away entirely once commands stopped,
 observed as the pose climbing past **50 m while the rover stood still**. It now
 publishes at 20 Hz, repeating the last command if fresh and sending **explicit
-zero** if it is older than `command_timeout`. "Nothing is driving the robot" is
-not absence of information; it is the statement that velocity is zero.
+zero** if it is older than `command_timeout`.
 
 **Gazebo's IMU publishes zero covariance.** A filter reads zero variance as
 infinite confidence, which makes the update ill-conditioned. This went unnoticed
 in earlier tasks because wheel odometry also supplied position and anchored the
-filter; with wheel feedback removed there is no position observation at all and
-the filter diverges outright. SDF's `<imu>` block has no orientation-noise field,
-so the covariance cannot be set at the source — hence `imu_relay_node`.
+filter; with wheel feedback removed the filter diverges outright. SDF's `<imu>`
+block has no orientation-noise field, so the covariance cannot be set at the
+source — hence `imu_relay_node`.
 
 **Everything runs on sim time.** `cmd_prior_node` stamping with the wall clock
 while Gazebo stamped sim time gave the filter a `dt` of ~1.79 billion seconds
@@ -193,16 +336,16 @@ Every node in the launch now sets `use_sim_time`.
 **Rotate or translate — never both at once.** The rover pivots in place until
 within `align_tolerance_deg` (4°) of the target bearing, then drives straight.
 Driving while the heading is still changing integrates distance along an
-out-of-date heading, and with no absolute reference that error is never
-recovered. A `cross_track_deadband` (5 cm) stops it pivoting for noise.
+out-of-date heading. A `cross_track_deadband` (5 cm) stops it pivoting for noise.
 
-**Cut back to the line gently after a detour.** The return is where a skid-steer
-pivots while displaced from the line, and the sideways slide during those pivots
-is invisible to the estimator — logged runs showed a single return adding ~20 cm
-of cross-track error. During the return the pivot rate drops to
-`return_angular_speed` (0.3 rad/s, from 0.8) and the cut-back angle is capped at
-`return_max_correction_deg` (30°, from 60°), which also halves the realignment
-pivot at the line. Walking and avoidance turns keep their normal values.
+**Pivots have a minimum rate.** The pivot command is proportional to heading
+error, so it shrinks as the rover lines up. Measured on this rover, a pure pivot
+below about 0.1 rad/s does not turn it at all — the wheels cannot overcome the
+scrub a skid-steer needs to rotate. With a 4° tolerance the command near the edge
+is 1.5 × 0.075 ≈ 0.11 rad/s, right at that threshold: three test runs deadlocked
+stationary with a 4.2–4.3° heading error until the stall detector aborted them.
+`min_pivot_speed` (0.3 rad/s) keeps every pivot above breakaway. It also matches
+the real robot, whose heavy chassis and motors cannot turn very slowly either.
 
 **Obstacle avoidance outranks everything, including the pause.** It reads only
 the LiDAR and never waits on the cycle timer or the estimator.
@@ -216,25 +359,24 @@ Gazebo transport connection per sample and crashed `gzserver` outright
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
-- **Dead reckoning has no absolute reference.** Error is a function of distance
-  travelled and nothing ever removes any. 0.36% is small but unbounded: roughly
-  2 m at 500 m, 4 m at a kilometre.
-- **Scan matching would not help in this world.** `slam_toolbox` or `rf2o` bound
-  error by aligning scans against environmental features — but in the empty world
-  all 360 LiDAR rays return `inf`, and even with obstacles present the rover
-  drives ~15 m blind between them. Sparse isolated boxes are poor matching
-  geometry. Localization against a map is worth adding only in an environment
-  with persistent structure (walls, a corridor); in open ground the honest answer
-  is a different reference entirely — GNSS/RTK, fiducials, or a magnetometer.
+- **Along the road, position is still dead-reckoned.** The car rows bound
+  sideways error and heading, but not how far along the road the rover is, so
+  where it stops relative to B keeps the accuracy of the IMU and commanded
+  velocity alone. Using individual cars or gaps as landmarks would be the next
+  step.
+- **The row measurement assumes a straight road with parallel, parked rows.**
+  Curves, angled parking or moving vehicles would break the straight-line fit.
+- **If both rows are hidden or missing, the correction pauses.** The EKF coasts
+  on the IMU and commanded velocity until a row is seen again. In a world with no
+  rows at all the road never anchors, the localizer sends nothing, and the
+  navigator follows A→B exactly as before.
 - **The simulated IMU is better than a real one.** Gazebo derives it from ground
-  truth plus configured noise. A physical IMU has gyro bias drift — its zero
-  point wanders with temperature and time — which would add error growing with
-  *time* rather than distance, and would show up worst on long runs.
-- **The `cmd_vel` prior is open loop.** It cannot detect wheel slip, a stall, or
-  the rover being pushed. True laser odometry (`rf2o`) would close that gap, at
-  the cost of needing features to match against.
+  truth plus configured noise. A physical IMU has gyro bias drift; on the road the
+  row heading measurement bounds that too, but in open ground it would not.
+- **Simulated LiDAR scans are instantaneous.** A real spinning LiDAR skews a scan
+  taken during a fast pivot, which would add error to the row fit at exactly the
+  moments it matters most; de-skewing with IMU yaw rate would address it.
 - **Avoidance is reactive, not planned.** A concave obstacle would trap the rover
   until the stall detector aborts.
-- **No obstacles in the bundled world**; they are added by hand in Gazebo.

@@ -5,6 +5,10 @@ no wheel odometry anywhere. cmd_prior_node turns the velocity we commanded into
 a motion prior, and the EKF fuses that with IMU heading to publish
 odom -> base_link. The drive controller's own odometry TF is switched off in
 config/ros2_controllers.yaml.
+
+In the road world, row_localizer_node adds a third input: sideways position and
+heading measured against the parked-car rows, which bounds the drift that the
+other two inputs cannot observe.
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -12,7 +16,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -20,11 +24,11 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     pkg_share = get_package_share_directory('egrobots_line_navigation')
     xacro_path = os.path.join(pkg_share, 'urdf', 'egrobots_rover.urdf.xacro')
-    world_path = os.path.join(pkg_share, 'worlds', 'egrobots_world.world')
     rviz_config = os.path.join(pkg_share, 'rviz', 'egrobots_rover.rviz')
 
     use_rviz = LaunchConfiguration('rviz')
     use_gui = LaunchConfiguration('gui')
+    world_path = PathJoinSubstitution([pkg_share, 'worlds', LaunchConfiguration('world')])
     robot_description = ParameterValue(Command(['xacro ', xacro_path]), value_type=str)
 
     gazebo_pkg = get_package_share_directory('gazebo_ros')
@@ -39,6 +43,11 @@ def generate_launch_description():
         # the graphics stack is unavailable; the LiDAR is a CPU ray sensor, so
         # physics and sensing are unaffected.
         DeclareLaunchArgument('gui', default_value='true'),
+        DeclareLaunchArgument('world', default_value='egrobots_world.world',
+                              description='World file in the package worlds/ folder, '
+                                          'e.g. road_world.world'),
+        DeclareLaunchArgument('row_correction', default_value='true',
+                              description='Fuse the car-row measurement into the EKF'),
         gazebo_launch,
         Node(package='robot_state_publisher', executable='robot_state_publisher',
              name='robot_state_publisher', output='screen',
@@ -61,6 +70,13 @@ def generate_launch_description():
         Node(package='egrobots_line_navigation', executable='imu_relay_node',
              name='imu_relay_node', output='screen',
              parameters=[{'use_sim_time': True}]),
+        # Sideways position and heading from the car rows. In a world without
+        # rows it simply never anchors and sends the EKF nothing.
+        Node(package='egrobots_line_navigation', executable='row_localizer_node',
+             name='row_localizer_node', output='screen',
+             parameters=[{'use_sim_time': True,
+                          'publish_measurement': ParameterValue(
+                              LaunchConfiguration('row_correction'), value_type=bool)}]),
         Node(package='robot_localization', executable='ekf_node',
              name='ekf_filter_node', output='screen',
              parameters=[os.path.join(pkg_share, 'config', 'ekf.yaml'),

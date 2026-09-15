@@ -32,6 +32,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 
 from geometry_msgs.msg import Twist, PoseStamped, Point
@@ -67,6 +68,10 @@ class LineNavigator(Node):
         self.declare_parameter('return_max_correction_deg', 30.0)
         # Pivot until within this of the target bearing, then drive straight.
         self.declare_parameter('align_tolerance_deg', 4.0)
+        # Never command a pivot slower than this. Below ~0.1 rad/s the skid-steer
+        # cannot overcome wheel scrub and does not turn at all, so a proportional
+        # command that shrinks with the error deadlocks just outside the tolerance.
+        self.declare_parameter('min_pivot_speed', 0.3)
         # Ignore cross-track error smaller than this, so the rover does not stop
         # and pivot for noise.
         self.declare_parameter('cross_track_deadband', 0.05)
@@ -86,6 +91,11 @@ class LineNavigator(Node):
         self.declare_parameter('stall_timeout', 20.0)
         self.declare_parameter('stall_min_progress', 0.15)
 
+        # When the car rows have been found, the path is the road's centreline:
+        # A and B are projected onto it, so they set where to start and stop and
+        # the rows set where the path runs sideways.
+        self.declare_parameter('use_road_centreline', True)
+
         self.declare_parameter('reference_frame', 'odom')
         self.declare_parameter('robot_frame', 'base_link')
 
@@ -102,6 +112,7 @@ class LineNavigator(Node):
         self.clear_start_y = 0.0
         self.goal_active = False
         self.line = None            # (ax, ay, ux, uy, nx, ny, length)
+        self.road = None            # (cx, cy, phi) from row_localizer_node
 
         scan_group = ReentrantCallbackGroup()
         action_group = ReentrantCallbackGroup()
@@ -113,6 +124,10 @@ class LineNavigator(Node):
 
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10,
                                  callback_group=scan_group)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             reliability=ReliabilityPolicy.RELIABLE)
+        self.create_subscription(PoseStamped, '/road_centreline', self.road_callback,
+                                 latched, callback_group=scan_group)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -140,6 +155,16 @@ class LineNavigator(Node):
     def scan_callback(self, msg):
         with self._lock:
             self.latest_scan = msg
+
+    def road_callback(self, msg):
+        q = msg.pose.orientation
+        phi = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        with self._lock:
+            self.road = (msg.pose.position.x, msg.pose.position.y, phi)
+        self.get_logger().info(
+            f'Road centreline received: through ({msg.pose.position.x:.2f}, '
+            f'{msg.pose.position.y:.2f}) heading {math.degrees(phi):+.2f} deg')
 
     def update_pose_from_tf(self):
         try:
@@ -185,6 +210,21 @@ class LineNavigator(Node):
     # ------------------------------------------------------------------
     # Line geometry
     # ------------------------------------------------------------------
+
+    def path_endpoints(self, a, b):
+        """Project A and B onto the road centreline, if one is known."""
+        with self._lock:
+            road = self.road
+        if road is None or not self.get_parameter('use_road_centreline').value:
+            return a, b
+        cx, cy, phi = road
+        ux, uy = math.cos(phi), math.sin(phi)
+
+        def onto(p):
+            along = (p.x - cx) * ux + (p.y - cy) * uy
+            return Point(x=cx + along * ux, y=cy + along * uy, z=0.0)
+
+        return onto(a), onto(b)
 
     def set_line(self, a, b):
         dx, dy = b.x - a.x, b.y - a.y
@@ -306,7 +346,9 @@ class LineNavigator(Node):
                            math.cos(desired_heading - yaw))
 
         if abs(error) > tolerance:
-            cmd.angular.z = max(-angular_speed, min(angular_speed, heading_kp * error))
+            min_pivot = min(self.get_parameter('min_pivot_speed').value, angular_speed)
+            rate = min(angular_speed, max(min_pivot, heading_kp * abs(error)))
+            cmd.angular.z = math.copysign(rate, error)
             cmd.linear.x = 0.0
         else:
             cmd.angular.z = 0.0
@@ -371,7 +413,8 @@ class LineNavigator(Node):
 
     def execute_callback(self, goal_handle):
         request = goal_handle.request
-        if not self.set_line(request.start, request.goal):
+        start, goal = self.path_endpoints(request.start, request.goal)
+        if not self.set_line(start, goal):
             goal_handle.abort()
             result = FollowLine.Result()
             result.success = False
@@ -400,14 +443,14 @@ class LineNavigator(Node):
         result = FollowLine.Result()
 
         self.get_logger().info(
-            f'Following the line ({request.start.x:.1f}, {request.start.y:.1f}) -> '
-            f'({request.goal.x:.1f}, {request.goal.y:.1f})')
+            f'Following the line ({start.x:.1f}, {start.y:.1f}) -> '
+            f'({goal.x:.1f}, {goal.y:.1f})')
 
         try:
             while rclpy.ok():
                 x, y, _, _ = self.pose()
                 along, cross = self.project(x, y)
-                distance = math.hypot(request.goal.x - x, request.goal.y - y)
+                distance = math.hypot(goal.x - x, goal.y - y)
                 max_cross = max(max_cross, abs(cross))
 
                 # --- R9: arrived ---
@@ -495,7 +538,7 @@ class LineNavigator(Node):
 
         x, y, _, _ = self.pose()
         result.final_position = Point(x=x, y=y, z=0.0)
-        result.final_distance_error = math.hypot(request.goal.x - x, request.goal.y - y)
+        result.final_distance_error = math.hypot(goal.x - x, goal.y - y)
         result.max_cross_track_error = max_cross
         return result
 

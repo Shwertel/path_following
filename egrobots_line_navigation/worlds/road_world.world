@@ -1,0 +1,140 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="default">
+    <include><uri>model://ground_plane</uri></include>
+    <include><uri>model://sun</uri></include>
+    <physics type="ode">
+      <ode><solver><iters>150</iters></solver></ode>
+    </physics>
+    <!-- Straight road along +x. Parked cars (4.5 x 1.8 x 1.5 m) line both
+         sides with inner edges at y = +/-3.0 m, so the path (y = 0) is the centre
+         of a 6 m lane. Cars are 1.0 m apart, with one car missing per
+         row to exercise gaps. -->
+    <model name="car_left_00">
+      <static>true</static>
+      <pose>-1.75 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_left_01">
+      <static>true</static>
+      <pose>3.75 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_left_02">
+      <static>true</static>
+      <pose>9.25 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_left_03">
+      <static>true</static>
+      <pose>14.75 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_left_05">
+      <static>true</static>
+      <pose>25.75 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_left_06">
+      <static>true</static>
+      <pose>31.25 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_left_07">
+      <static>true</static>
+      <pose>36.75 3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_00">
+      <static>true</static>
+      <pose>-1.75 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_01">
+      <static>true</static>
+      <pose>3.75 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_02">
+      <static>true</static>
+      <pose>9.25 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_03">
+      <static>true</static>
+      <pose>14.75 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_04">
+      <static>true</static>
+      <pose>20.25 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_05">
+      <static>true</static>
+      <pose>25.75 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="car_right_07">
+      <static>true</static>
+      <pose>36.75 -3.90 0.75 0 0 0</pose>
+      <link name="body">
+        <collision name="collision"><geometry><box><size>4.5 1.8 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>4.5 1.8 1.5</size></box></geometry>
+          <material><ambient>0.25 0.35 0.6 1</ambient><diffuse>0.25 0.35 0.6 1</diffuse></material></visual>
+      </link>
+    </model>
+  </world>
+</sdf>
