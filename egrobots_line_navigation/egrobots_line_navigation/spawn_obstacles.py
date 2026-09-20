@@ -13,8 +13,9 @@ from rclpy.node import Node
 from gazebo_msgs.srv import SpawnEntity
 from geometry_msgs.msg import Pose
 
-# (x, y) of each obstacle. The road's centreline is y = 0 and its lane is 6 m
-# wide, so these sit dead centre and 0.4 m either side of it.
+# (x, y) of each obstacle. y is measured from the lane the rover drives in, not
+# from the road's centreline, so obstacles stay in its way wherever the lane is:
+# dead centre of the lane, and 0.4 m either side of it.
 LAYOUTS = {
     'road': [(8.0, 0.0), (18.0, 0.4), (27.0, -0.4)],
     'centre': [(10.0, 0.0), (20.0, 0.0)],
@@ -37,6 +38,9 @@ class SpawnObstacles(Node):
         self.declare_parameter('layout', 'road')
         self.declare_parameter('size', 1.0)
         self.declare_parameter('height', 1.2)
+        # Sideways position of the lane, from the road's centreline at y = 0.
+        # Keep this equal to lane_offset in config/line_params.yaml.
+        self.declare_parameter('lane_offset', -1.5)
         self.client = self.create_client(SpawnEntity, '/spawn_entity')
 
     def run(self):
@@ -50,8 +54,9 @@ class SpawnObstacles(Node):
 
         size = self.get_parameter('size').value
         height = self.get_parameter('height').value
+        lane = self.get_parameter('lane_offset').value
         ok = True
-        for i, (x, y) in enumerate(LAYOUTS[layout]):
+        for i, (x, y) in enumerate((x, y + lane) for x, y in LAYOUTS[layout]):
             request = SpawnEntity.Request()
             request.name = f'obstacle_{i}'
             request.xml = box_sdf(size, height)

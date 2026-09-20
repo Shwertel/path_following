@@ -28,8 +28,14 @@ line_navigator_node:
 
     stall_timeout: 20.0
     stall_min_progress: 0.15
+    side_clearance: 0.5          # extra room abeam before swerving to that side
+    side_window_deg: 20.0
 
-    use_road_centreline: true    # path = centre between the car rows, when detected
+    use_road_centreline: true    # path is set by the car rows, when detected
+    # Where the lane sits relative to the centre between the rows: + is left,
+    # - is right, 0.0 drives down the middle. -1.5 m on a 6 m lane keeps the
+    # rover in the right-hand half, about 1.5 m off the right-hand row.
+    lane_offset: -1.5
 
     reference_frame: "odom"
     robot_frame: "base_link"

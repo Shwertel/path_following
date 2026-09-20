@@ -88,13 +88,20 @@ displaced one cuts back at an angle that grows with the displacement.
 ## 4. Measuring position against the parked cars
 
 The deployment environment is a straight road lined with parked cars on both
-sides, and the path is its centreline. `road_world.world` models it: cars
-4.5 × 1.8 × 1.5 m, 1 m apart, inner edges at y = ±3.0 m (a 6 m lane), with one
-car missing from each row to leave wider gaps.
+sides. `road_world.world` models it: cars 4.5 × 1.8 × 1.5 m, 1 m apart, inner
+edges at y = ±3.0 m (a 6 m lane), with one car missing from each row to leave
+wider gaps.
+
+The rover does not drive down the middle of it. Like a vehicle keeping to one
+side of a road, it follows a **lane**: the measured centreline shifted sideways
+by `lane_offset` (−1.5 m, the right-hand half of a 6 m lane). Only the path
+moves — position is still measured against **both** rows, so the accuracy is the
+same as driving down the centre.
 
 ```
  +3.9  [car][car][car] [car][car]   [car][car]      ← left row
-  0.0  A ─────────── ▣ obstacle ──────────── B      ← path = road centreline
+  0.0  · · · · · · · · · · · · · · · · · · · ·      ← road centre (measured)
+ -1.5  A ─────────── ▣ obstacle ──────────── B      ← path = lane (offset -1.5 m)
  -3.9  [car][car]   [car][car][car][car] [car]      ← right row
 ```
 
@@ -126,8 +133,15 @@ The road itself is **anchored in odom from the first scans**, while the rover is
 still at its start pose and odom is exact: lane width, the rover's offset from
 the centre, and the road's direction are measured, not hard-coded. The centreline
 is published latched on `/road_centreline`, and the navigator projects A and B
-onto it — **A and B say where to start and stop; the car rows say where the path
-runs sideways**.
+onto it and shifts them sideways by `lane_offset` — **A and B say where to start
+and stop; the car rows say where the path runs sideways**.
+
+Driving in a lane puts one row close by, which changes how a detour must be
+chosen: swerving towards the near row would drive into parked cars. Before
+picking a side, the navigator checks the room abeam on each side against
+`clearing_distance + side_clearance` and rules out a side without it. With room
+on both sides — an open world, or a path down the middle of the road — nothing
+is ruled out and the choice is the obstacle's position as before.
 
 The measurement reaches the EKF as `/row_pose` with its covariance **rotated so
 it is tight across the road and very loose along it** (σ 0.05 m across, 50 m
@@ -162,11 +176,15 @@ In the road world (row correction on by default):
 ros2 launch egrobots_line_navigation line_navigation.launch.py world:=road_world.world
 ```
 
-Place obstacles at fixed positions, so repeated runs are comparable:
+Place obstacles at fixed positions, so repeated runs are comparable. Their `y`
+is measured from the lane, not the road centre, so they stay in the rover's way:
 
 ```bash
 ros2 run egrobots_line_navigation spawn_obstacles --ros-args -p layout:=road
 ```
+
+If you change `lane_offset` in `config/line_params.yaml`, pass the same value
+here (`-p lane_offset:=...`).
 
 Send the goal:
 
@@ -250,8 +268,9 @@ odometry — lost **2.3 m to a single avoidance turn**.
 
 ### Road world — with and without the car-row correction
 
-30 m goal, three obstacles at identical fixed positions (centre, +0.4 m, −0.4 m),
-six runs alternated ON / OFF, scored against Gazebo ground truth. All six runs
+30 m goal, three obstacles at identical fixed positions (on the path, +0.4 m,
+−0.4 m), six runs alternated ON / OFF, scored against Gazebo ground truth. These
+runs predate the lane offset, so the path was the road centreline. All six runs
 reached B. The only difference between the two sets is whether `/row_pose`
 reaches the EKF (`row_correction`); both follow the road centreline.
 
@@ -282,6 +301,27 @@ Three runs per condition is a small sample, and the along-road distance to B is
 not directly corrected by the rows, so its improvement should not be read as
 more than an indication.
 
+### Road world — driving in a lane
+
+The same 30 m goal with the path offset 1.5 m to the right of the road centre
+and the three obstacles moved with it, row correction on, one run:
+
+| Metric | Result |
+|---|---|
+| Goal | **SUCCEEDED** |
+| True deviation from the lane at finish | **0.3 cm** |
+| Sideways tracking of the lane, outside detours | mean 5.0 cm, max 29.8 cm |
+| Sideways estimator error | final 0.5 cm, max 5.4 cm |
+| Detour excursion off the lane | 1.85 m |
+| Obstacle encounters | 7, **every one avoided to the left** — away from the near row |
+| Closest approach to a car row | 1.44 m from the rover's centre (1.19 m from its side) |
+| Along-road estimator error at finish | 59 cm — dead-reckoned, unchanged by the rows |
+
+The rover starts on the road centre, merges into the lane within about 2 m of
+travel, and holds it. Sideways accuracy is the same as it was down the middle:
+both rows are still measured, one just sits closer. The side rule did its job —
+with only 1.5 m of road to the right, all seven detours went left.
+
 ---
 
 ## 8. Design Decisions
@@ -308,9 +348,20 @@ the same side as a row. Keeping only points near the predicted row line — then
 fitting with RANSAC — stops it biasing the fit. If the two fitted rows disagree
 about the lane width, the one closer to its prediction is kept.
 
-**The path is the road centre.** A and B are projected onto the measured
-centreline, so a goal given slightly off-centre still follows the middle of the
-lane between the cars.
+**The path is a lane, not the middle of the road.** A and B are projected onto
+the measured centreline and shifted sideways by `lane_offset`, so a goal given
+anywhere near the road follows the lane. Offsetting the path rather than moving
+the cars is what works on a real road, where the rows are where they are; it also
+keeps the measurement honest, since both rows are still used to fix position.
+Set `lane_offset: 0.0` to drive down the centre again.
+
+**A detour never turns into the near row.** With the path 1.5 m off centre there
+is 1.5 m of road on one side and 4.5 m on the other, and a detour moves the rover
+roughly 1–1.3 m sideways. Choosing the side by nearest obstacle return alone
+would swerve into the cars whenever the obstacle sat slightly the other way, so a
+side with less than `clearing_distance + side_clearance` (2.0 m) of room abeam is
+ruled out first. Room is read from the LiDAR, not from the stored road width, so
+the rule also holds while the rover is already displaced.
 
 **The motion prior must be a continuous stream, not one message per command.**
 `cmd_prior_node` originally published only when a command arrived. A Kalman
@@ -380,3 +431,7 @@ Gazebo transport connection per sample and crashed `gzserver` outright
   moments it matters most; de-skewing with IMU yaw rate would address it.
 - **Avoidance is reactive, not planned.** A concave obstacle would trap the rover
   until the stall detector aborts.
+- **The lane offset is a fixed number, not a lane the rover reads.** It assumes
+  the lane it should drive in sits a set distance from the centre between the
+  rows. Nothing looks for lane markings, and an obstacle parked across the whole
+  wide side would leave the rover with no side to swerve to.

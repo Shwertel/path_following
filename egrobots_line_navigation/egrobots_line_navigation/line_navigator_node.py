@@ -91,10 +91,19 @@ class LineNavigator(Node):
         self.declare_parameter('stall_timeout', 20.0)
         self.declare_parameter('stall_min_progress', 0.15)
 
-        # When the car rows have been found, the path is the road's centreline:
-        # A and B are projected onto it, so they set where to start and stop and
-        # the rows set where the path runs sideways.
+        # When the car rows have been found, the path is set by the road: A and
+        # B are projected onto its centreline, so they set where to start and
+        # stop and the rows set where the path runs sideways.
         self.declare_parameter('use_road_centreline', True)
+        # The rover drives in a lane rather than down the middle, so the path is
+        # the centreline shifted sideways. Positive is left of the road centre,
+        # negative right of it; 0.0 puts the path back on the centreline.
+        self.declare_parameter('lane_offset', -1.5)
+        # Room needed abeam before avoidance will swerve to that side: the
+        # clearing distance plus this margin. Keeps the rover from turning into
+        # the near row of cars when the lane it drives in is close to them.
+        self.declare_parameter('side_clearance', 0.5)
+        self.declare_parameter('side_window_deg', 20.0)
 
         self.declare_parameter('reference_frame', 'odom')
         self.declare_parameter('robot_frame', 'base_link')
@@ -162,9 +171,12 @@ class LineNavigator(Node):
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         with self._lock:
             self.road = (msg.pose.position.x, msg.pose.position.y, phi)
+        offset = self.get_parameter('lane_offset').value
+        side = 'left of' if offset > 0 else 'right of' if offset < 0 else 'on'
         self.get_logger().info(
             f'Road centreline received: through ({msg.pose.position.x:.2f}, '
-            f'{msg.pose.position.y:.2f}) heading {math.degrees(phi):+.2f} deg')
+            f'{msg.pose.position.y:.2f}) heading {math.degrees(phi):+.2f} deg; '
+            f'driving {abs(offset):.2f} m {side} it')
 
     def update_pose_from_tf(self):
         try:
@@ -212,17 +224,27 @@ class LineNavigator(Node):
     # ------------------------------------------------------------------
 
     def path_endpoints(self, a, b):
-        """Project A and B onto the road centreline, if one is known."""
+        """Project A and B onto the lane, if the road is known.
+
+        The road localizer measures the centre between the two car rows. The
+        lane the rover drives in is that centreline shifted sideways by
+        lane_offset, the same way a vehicle keeps to one side of a road instead
+        of straddling the middle of it. Only the path moves: position is still
+        measured against both rows, so the accuracy is unchanged.
+        """
         with self._lock:
             road = self.road
         if road is None or not self.get_parameter('use_road_centreline').value:
             return a, b
         cx, cy, phi = road
         ux, uy = math.cos(phi), math.sin(phi)
+        nx, ny = -math.sin(phi), math.cos(phi)
+        offset = self.get_parameter('lane_offset').value
 
         def onto(p):
             along = (p.x - cx) * ux + (p.y - cy) * uy
-            return Point(x=cx + along * ux, y=cy + along * uy, z=0.0)
+            return Point(x=cx + along * ux + offset * nx,
+                         y=cy + along * uy + offset * ny, z=0.0)
 
         return onto(a), onto(b)
 
@@ -266,7 +288,38 @@ class LineNavigator(Node):
     # Motion
     # ------------------------------------------------------------------
 
+    def sector_min(self, msg, centre_deg, window_deg):
+        """Closest return in a cone centred on centre_deg (0 = straight ahead)."""
+        n = len(msg.ranges)
+        lo = int(round((math.radians(centre_deg - window_deg) - msg.angle_min)
+                       / msg.angle_increment))
+        hi = int(round((math.radians(centre_deg + window_deg) - msg.angle_min)
+                       / msg.angle_increment))
+        values = [min(r, msg.range_max)
+                  for r in msg.ranges[max(0, lo):min(n, hi + 1)] if r > 0.0]
+        return min(values) if values else msg.range_max
+
     def choose_turn_direction(self, msg, scan_deg):
+        """Pick the side to swerve towards: away from the obstacle, but never
+        into a wall of parked cars.
+
+        Driving in a lane puts one row close by, and the nearest-return rule
+        alone would happily turn that way when the obstacle sits slightly to the
+        other side. So a side is ruled out first if there is not enough room
+        abeam to complete the manoeuvre. With room on both sides — an open
+        world, or a path down the middle of the road — nothing is ruled out and
+        the choice is the obstacle's position as before.
+        """
+        needed = (self.get_parameter('clearing_distance').value
+                  + self.get_parameter('side_clearance').value)
+        window = self.get_parameter('side_window_deg').value
+        left_room = self.sector_min(msg, 90.0, window)
+        right_room = self.sector_min(msg, -90.0, window)
+        if left_room < needed and right_room >= needed:
+            return -1.0
+        if right_room < needed and left_room >= needed:
+            return 1.0
+
         centre = int(round((0.0 - msg.angle_min) / msg.angle_increment))
         half = int(math.radians(scan_deg) / msg.angle_increment)
         n = len(msg.ranges)
