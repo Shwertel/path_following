@@ -14,10 +14,20 @@ from gazebo_msgs.srv import SpawnEntity
 from geometry_msgs.msg import Pose
 
 # (x, y) of each obstacle. y is measured from the lane the rover drives in, not
-# from the road's centreline, so obstacles stay in its way wherever the lane is:
-# dead centre of the lane, and 0.4 m either side of it.
+# from the road's centreline, so obstacles stay in its way wherever the lane is.
+#
+# 'road' puts them towards the near (right-hand) row of parked cars, the way
+# debris or an open door would sit at the kerb side. With the lane 1.5 m off
+# the cars and 1 m boxes, the gaps left to the cars are 0.5, 0.4 and 0.3 m -
+# all narrower than the rover (0.64 m across the wheels) - while each box still
+# overlaps the rover's path by 32, 22 and 12 cm. The only way past is the wide
+# side, so this is the layout that exercises avoidance's side rule.
+#
+# 'spread' is the previous layout (on the lane and 0.4 m either side of it),
+# kept so earlier results can be reproduced.
 LAYOUTS = {
-    'road': [(8.0, 0.0), (18.0, 0.4), (27.0, -0.4)],
+    'road': [(8.0, -0.5), (18.0, -0.6), (27.0, -0.7)],
+    'spread': [(8.0, 0.0), (18.0, 0.4), (27.0, -0.4)],
     'centre': [(10.0, 0.0), (20.0, 0.0)],
 }
 

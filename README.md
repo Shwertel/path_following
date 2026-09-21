@@ -183,6 +183,12 @@ is measured from the lane, not the road centre, so they stay in the rover's way:
 ros2 run egrobots_line_navigation spawn_obstacles --ros-args -p layout:=road
 ```
 
+| Layout | Obstacles (x, y from the lane) | Purpose |
+|---|---|---|
+| `road` | (8, −0.5), (18, −0.6), (27, −0.7) | Pushed towards the near row of cars: gaps of 0.5 / 0.4 / 0.3 m to the cars, too narrow for the rover, so the only way past is the wide side |
+| `spread` | (8, 0.0), (18, +0.4), (27, −0.4) | On the lane and either side of it — the layout used for the earlier results |
+| `centre` | (10, 0.0), (20, 0.0) | Two obstacles dead on the path |
+
 If you change `lane_offset` in `config/line_params.yaml`, pass the same value
 here (`-p lane_offset:=...`).
 
@@ -268,8 +274,8 @@ odometry — lost **2.3 m to a single avoidance turn**.
 
 ### Road world — with and without the car-row correction
 
-30 m goal, three obstacles at identical fixed positions (on the path, +0.4 m,
-−0.4 m), six runs alternated ON / OFF, scored against Gazebo ground truth. These
+30 m goal, three obstacles at identical fixed positions (the `spread` layout: on
+the path, +0.4 m, −0.4 m), six runs alternated ON / OFF, scored against Gazebo ground truth. These
 runs predate the lane offset, so the path was the road centreline. All six runs
 reached B. The only difference between the two sets is whether `/row_pose`
 reaches the EKF (`row_correction`); both follow the road centreline.
@@ -304,7 +310,7 @@ more than an indication.
 ### Road world — driving in a lane
 
 The same 30 m goal with the path offset 1.5 m to the right of the road centre
-and the three obstacles moved with it, row correction on, one run:
+and the `spread` obstacles moved with it, row correction on, one run:
 
 | Metric | Result |
 |---|---|
@@ -321,6 +327,31 @@ The rover starts on the road centre, merges into the lane within about 2 m of
 travel, and holds it. Sideways accuracy is the same as it was down the middle:
 both rows are still measured, one just sits closer. The side rule did its job —
 with only 1.5 m of road to the right, all seven detours went left.
+
+### Road world — obstacles at the kerb side
+
+The `road` layout pushes the obstacles towards the near row of cars (0.5 / 0.4 /
+0.3 m gaps, all too narrow for the rover). This is the hard case for the row
+measurement as well as for avoidance: the obstacles sit inside the band where
+the right-hand row is looked for, and hide part of it while the rover passes.
+One run:
+
+| Metric | Result |
+|---|---|
+| Goal | **SUCCEEDED** |
+| True deviation from the lane at finish | **1.8 cm** |
+| Sideways tracking of the lane, outside detours | mean 5.3 cm, max 29.9 cm |
+| Sideways estimator error | final 0.5 cm, **max 4.8 cm** |
+| Obstacle encounters | 6, **every one avoided to the wide side** |
+| Closest the rover's body came to an obstacle | about 0.25 m |
+| Closest the rover's side came to a parked car | 1.12 m |
+| Row fit, sampled over the run | both rows found in every sample (28 of 28) |
+| Along-road estimator error at finish | 35 cm — dead-reckoned, unchanged by the rows |
+
+The rover never tried the gap between an obstacle and the cars, and the row
+estimate stayed as accurate as on the open lane. That is expected rather than
+proven here: an obstacle covers about a metre of road, the fit looks for a line
+at least 2 m long, and RANSAC keeps the longer run of parked cars around it.
 
 ---
 
