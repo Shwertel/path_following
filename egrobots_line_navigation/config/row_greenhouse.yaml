@@ -1,0 +1,30 @@
+# Row localizer settings for greenhouse crop rows.
+#
+# Plants are not parked cars: the rows are closer, the surface is ragged rather
+# than flat, and the lane changes width along its length. So the search windows
+# shrink, the inlier threshold widens to accept a bumpy edge, and the stored
+# width is allowed to follow the measured one.
+row_localizer_node:
+  ros__parameters:
+    min_range: 0.15
+    max_range: 6.0
+    along_window_min: -1.5
+    along_window_max: 5.0
+    startup_side_min: 0.35       # the rows sit about 0.8 m either side
+    startup_side_max: 1.8
+    gate_width: 0.35
+
+    ransac_iterations: 80
+    ransac_threshold: 0.12       # foliage is rough; a flat car panel is not
+    min_inliers: 8
+    min_span: 1.5
+    max_heading_disagreement_deg: 25.0
+    max_width_error: 0.45
+    width_tracking_gain: 0.08
+
+    anchor_scans: 10
+    anchor_max_leading: 0.5
+    lateral_std: 0.08            # the lane's own centre wanders a little
+    heading_std_deg: 2.0
+    along_std: 50.0
+    single_row_inflation: 2.0

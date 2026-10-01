@@ -1,0 +1,27 @@
+# Row localizer settings for the parked-car road: a 6 m lane between flat car
+# panels whose width does not change. These are the node's own defaults, kept
+# here so the road and greenhouse profiles sit side by side.
+row_localizer_node:
+  ros__parameters:
+    min_range: 0.3
+    max_range: 9.0
+    along_window_min: -4.0
+    along_window_max: 8.0
+    startup_side_min: 1.5
+    startup_side_max: 6.0
+    gate_width: 0.6
+
+    ransac_iterations: 60
+    ransac_threshold: 0.08
+    min_inliers: 12
+    min_span: 2.0
+    max_heading_disagreement_deg: 25.0
+    max_width_error: 0.5
+    width_tracking_gain: 0.05
+
+    anchor_scans: 10
+    anchor_max_leading: 1.0
+    lateral_std: 0.05
+    heading_std_deg: 1.5
+    along_std: 50.0
+    single_row_inflation: 2.0

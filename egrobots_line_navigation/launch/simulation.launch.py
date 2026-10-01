@@ -8,7 +8,8 @@ config/ros2_controllers.yaml.
 
 In the road world, row_localizer_node adds a third input: sideways position and
 heading measured against the parked-car rows, which bounds the drift that the
-other two inputs cannot observe.
+other two inputs cannot observe. The same node does the same job for greenhouse
+crop rows, with the search windows and thresholds of config/row_greenhouse.yaml.
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -47,7 +48,10 @@ def generate_launch_description():
                               description='World file in the package worlds/ folder, '
                                           'e.g. road_world.world'),
         DeclareLaunchArgument('row_correction', default_value='true',
-                              description='Fuse the car-row measurement into the EKF'),
+                              description='Fuse the row measurement into the EKF'),
+        DeclareLaunchArgument('row_params', default_value='row_road.yaml',
+                              description='Row localizer profile in config/, '
+                                          'e.g. row_greenhouse.yaml'),
         gazebo_launch,
         Node(package='robot_state_publisher', executable='robot_state_publisher',
              name='robot_state_publisher', output='screen',
@@ -74,7 +78,9 @@ def generate_launch_description():
         # rows it simply never anchors and sends the EKF nothing.
         Node(package='egrobots_line_navigation', executable='row_localizer_node',
              name='row_localizer_node', output='screen',
-             parameters=[{'use_sim_time': True,
+             parameters=[PathJoinSubstitution([pkg_share, 'config',
+                                               LaunchConfiguration('row_params')]),
+                         {'use_sim_time': True,
                           'publish_measurement': ParameterValue(
                               LaunchConfiguration('row_correction'), value_type=bool)}]),
         Node(package='robot_localization', executable='ekf_node',

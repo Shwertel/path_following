@@ -31,6 +31,12 @@ line_navigator_node:
     side_clearance: 0.5          # extra room abeam before swerving to that side
     side_window_deg: 20.0
 
+    # Steer by the straight line anchored at the start, not by the road centre
+    # measured scan by scan: a road of parked cars is straight and its width
+    # fixed, and this is the configuration the road results were measured with.
+    # The greenhouse profile turns lane centring on, where it is needed.
+    use_lane_centring: false
+
     use_road_centreline: true    # path is set by the car rows, when detected
     # Where the lane sits relative to the centre between the rows: + is left,
     # - is right, 0.0 drives down the middle. -1.5 m on a 6 m lane keeps the

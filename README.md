@@ -1,12 +1,21 @@
-# egrobots-line-navigation — Straight-Line A→B Without Wheel Odometry (ROS 2 Humble)
+# egrobots-line-navigation — Lane Navigation Without Wheel Odometry (ROS 2 Humble)
 
-The rover travels a straight line from Point A to Point B in walk/pause
-iterations, avoids obstacles that block it, returns to the same line afterwards,
-and stops on arrival — using **only a 2D LiDAR and an IMU**. No wheel encoder
-information is used for localization.
+The rover travels from Point A to Point B, avoids obstacles that block it,
+returns to its path afterwards, and stops on arrival — using **only a 2D LiDAR
+and an IMU**. No wheel encoder information is used for localization.
 
-Built for the Egrobots ROS 2 Week 4 Task (Autonomous Straight-Line Navigation),
-on the custom 4-wheel rover from the previous tasks.
+Two briefs are implemented here, on the custom 4-wheel rover from the previous
+tasks, with the same nodes and different parameter profiles:
+
+| Brief | World | Launch | Written up in |
+|---|---|---|---|
+| Autonomous straight-line navigation (Week 4) | open ground, then a road lined with parked cars | `line_navigation.launch.py` | sections 1–9 |
+| Autonomous greenhouse lane navigation | a greenhouse crop lane | `greenhouse.launch.py` | **section 10** |
+
+The second brief turned out to need very little new code: measuring your
+position from two rows of parked cars and measuring it from two rows of plants
+are the same problem. What it did need was giving up the assumption that the
+lane is straight and of fixed width.
 
 ---
 
@@ -205,9 +214,14 @@ iteration count. `Ctrl+C` cancels the goal.
 
 Launch arguments:
 
+For the greenhouse lane, see section 10 — `greenhouse.launch.py` is this launch
+with the greenhouse world and the greenhouse parameter profiles.
+
 | Argument | Default | Effect |
 |---|---|---|
-| `world` | `egrobots_world.world` | `road_world.world` for the parked-car road |
+| `world` | `egrobots_world.world` | `road_world.world` for the parked-car road, `greenhouse_world.world` for the crop lane |
+| `nav_params` | `line_params.yaml` | Navigator profile in `config/`, e.g. `greenhouse_params.yaml` |
+| `row_params` | `row_road.yaml` | Row localizer profile in `config/`, e.g. `row_greenhouse.yaml` |
 | `row_correction` | `true` | `false` keeps the road centreline but sends the EKF no row measurement — for comparison runs |
 | `rviz` | `true` | `false` skips RViz |
 | `gui` | `true` | `false` runs Gazebo headless (no OpenGL); physics and the CPU ray LiDAR are unaffected |
@@ -348,6 +362,10 @@ One run:
 | Row fit, sampled over the run | both rows found in every sample (28 of 28) |
 | Along-road estimator error at finish | 35 cm — dead-reckoned, unchanged by the rows |
 
+Re-run after the greenhouse changes (section 10) to check for regressions:
+reached B, finished 0.2 cm from the lane, sideways estimator error 0.3 cm final
+and 4.9 cm max, all obstacles avoided to the wide side.
+
 The rover never tried the gap between an obstacle and the cars, and the row
 estimate stayed as accurate as on the open lane. That is expected rather than
 proven here: an obstacle covers about a metre of road, the fit looks for a line
@@ -466,3 +484,171 @@ Gazebo transport connection per sample and crashed `gzserver` outright
   the lane it should drive in sits a set distance from the centre between the
   rows. Nothing looks for lane markings, and an obstacle parked across the whole
   wide side would leave the rover with no side to swerve to.
+
+---
+
+## 10. Greenhouse lane navigation
+
+A second brief: drive autonomously **inside a greenhouse lane**, keeping
+centred between its two sides, correcting continuously, never getting too close
+to either side, and coping with a lane that is not perfectly symmetrical.
+
+```bash
+ros2 launch egrobots_line_navigation greenhouse.launch.py
+```
+
+```bash
+ros2 action send_goal -f /follow_line egrobots_line_interfaces/action/FollowLine "{start: {x: 0.0, y: 0.0, z: 0.0}, goal: {x: 21.0, y: 0.0, z: 0.0}, tolerance: 0.0}"
+```
+
+A and B only say where to start and where to stop. Where the path runs sideways
+is decided by the crop rows.
+
+### 10.1 Requirements
+
+| ID | Requirement | Where |
+|---|---|---|
+| R1 | Operate inside a greenhouse lane | `greenhouse_world.world`, `greenhouse.launch.py` |
+| R2 | Detect the boundaries of the lane | `row_localizer_node` — RANSAC + PCA line fit per side |
+| R3 | Maintain a centred position | `lane_offset: 0.0` against the measured lane centre |
+| R4 | Move forward autonomously | `FollowLine` action, no walk/pause cycle in this brief |
+| R5 | Correct continuously when it drifts | cross-track control at 10 Hz against `/lane_centreline` |
+| R6 | Never get too close to either side | `side_safety()` — push away and slow down |
+| R7 | Cope with an asymmetric lane | width tracking, single-side fallback, local lane reference |
+
+### 10.2 Research — how robots find their way down a crop lane
+
+Four families of approach appear in greenhouse and field robotics:
+
+1. **Physical guidance.** Commercial glasshouses run trolleys on the heating
+   pipes, and many spraying robots follow a buried wire or a rail. Accurate and
+   cheap, but the lane has to be built for the robot. Not applicable here.
+2. **Absolute localization — GNSS or a prebuilt map.** RTK-GNSS is the standard
+   in open fields and is useless under glass: the structure blocks and reflects
+   the signal. The indoor equivalent is SLAM plus AMCL on a prebuilt map
+   (`slam_toolbox`, Nav2). It works, but it localizes against a map of a crop
+   that grows, is pruned, and is moved — the map is stale within weeks, and the
+   lane you must stay centred in is not where the map says it is.
+3. **Relative, reactive row following.** Detect the two rows in the current scan
+   and steer by them. The common implementations are a Hough transform or a
+   least-squares/RANSAC line fit on 2D LiDAR returns, sometimes on the vertical
+   stems only; vision equivalents detect the vanishing point between rows. This
+   is what agricultural row-following literature overwhelmingly uses, because
+   the quantity you need — *where is the middle of this lane, right here* — is
+   measured directly rather than inferred from a global pose.
+4. **Dead reckoning between measurements.** Wheel odometry, IMU, or scan
+   matching (`rf2o`, ICP) to carry position through gaps where the rows cannot
+   be seen. Necessary as a complement, never sufficient alone: in a lane of
+   near-identical plants, scan matching has little to lock onto along the lane.
+
+**What was implemented: (3), backed by (4).** The rows are fitted per scan and
+the rover steers by the lane centre measured at its own position; the EKF of
+commanded velocity and IMU heading carries it across gaps. (2) was rejected
+because a map of a growing crop goes stale, and because the task is defined
+relative to the lane, not to a map. The pieces were already here from the road
+brief — the same node fits parked cars and plant rows.
+
+### 10.3 The simulated greenhouse
+
+`worlds/greenhouse_world.world`, generated by `worlds/make_greenhouse_world.py`
+with a fixed seed so it can be regenerated or retuned:
+
+```
+ +3.2..+4.0   [plants]  [plants]  [plants]        ← next lane's far row
+ +0.8..+1.6   [plants]  [plants]      ·· gap ··   ← left side of our lane
+       0.0    A ─────────────────────────── B     ← the lane, 1.6 m nominal
+ -1.6..-0.8   [plants]  [plants]  [plants]        ← right side of our lane
+ -4.0..-3.2   [plants]  [plants]  [plants]        ← next lane's far row
+```
+
+* Each plant is its own rough box — jittered width, depth, height and inner
+  face — so the LiDAR sees a ragged edge, not a wall. The LiDAR plane is 0.77 m
+  above the floor and the plants stand 1.2–1.6 m, so it cuts through foliage.
+* The inner faces wander ±0.1 m along the lane, so the **true width varies
+  between 1.47 and 1.78 m** and the lane's centre wanders with it.
+* The left row has a **2 m gap** (x = 11–13) where plants are missing.
+* Neighbouring lanes 2.4 m either side, so the localizer has to lock onto the
+  right pair of rows rather than the nearest line it can find.
+* The rover starts **outside** the lane and drives in.
+
+### 10.4 What changed for a greenhouse
+
+**The lane is measured locally, not anchored once.** On the road the path is a
+straight line fixed at the start. A crop lane wanders, so `row_localizer_node`
+also publishes `/lane_centreline` every scan — the centre between the two rows
+*at the rover*, with their local direction — and the navigator steers by that
+(`use_lane_centring`). This is what makes "centred between the two sides" mean
+something when the two sides are not parallel.
+
+**The stored width follows the measured one.** `width_tracking_gain` lets the
+lane pinch and widen. The width check that protects the fit from a bad row
+stays, but as a sanity check rather than a fixed expectation.
+
+**The lane is anchored only when its sides are beside the rover.** A row seen
+entirely from in front is seen end-on: the scan grazes the ends of the plants
+rather than their faces, which reads the lane as wider than it is and its
+direction as about a degree off. Anchoring from the lane's mouth produced a
+lane direction 0.93° out, and since every later position is measured against
+that line, the error grew with distance: **33 cm of estimator error by the end
+of a 21 m lane.** Waiting until the rows are level with the rover
+(`anchor_max_leading`) cut it to about 0.5°.
+
+**Arrival is progress along the lane, not distance to a point.** With the
+estimate off sideways by more than the goal tolerance, a rover judged by
+distance to B can pass the end of the lane without ever coming within tolerance
+of it — observed once, driving 5 m out of the lane before the stall detector
+stopped it.
+
+**Keeping off the sides (R6).** `side_safety()` measures the air beside the
+rover's bodywork, left and right, from LiDAR returns alongside it. Inside
+`min_side_clearance` the near side is added to the cross-track error — which the
+controller already converts into a heading away from it — and the speed is
+scaled down with the room left. There is no new state machine to get stuck in.
+If **both** sides are inside `stop_side_clearance` the lane is narrower than the
+rover should attempt and it stops instead of squeezing through.
+
+### 10.5 Measured results
+
+One run down the 20 m lane, headless, scored against Gazebo ground truth. The
+lane's true centre is known from the world generator, so deviation is measured
+against **the lane's actual centre at each point**, not against y = 0:
+
+| Metric | Result |
+|---|---|
+| Goal | **reached** |
+| Deviation from the lane's true centre | **mean 3.5 cm, max 7.6 cm**, 1.6 cm at the end |
+| Clearance from the rover's side to the plants | never below **38 cm** (48 cm when perfectly centred) |
+| Through the 2 m gap in the left row | mean 3.7 cm, max 6.6 cm off centre |
+| True lane width over the run | 1.47 – 1.78 m |
+| Sideways estimator error | 22.6 cm at the end — see the limitation below |
+
+R6, tested separately by telling the rover to drive 35 cm left of centre, which
+would leave 13 cm of air beside the plants:
+
+| | Without the limiter | With it |
+|---|---|---|
+| Held at | 35 cm off centre | **25 cm off centre** |
+| Clearance to the plants | 13 cm | **22 cm mean, 17 cm min** |
+
+It is a proportional push, not a hard constraint: it trades off against the
+cross-track term rather than stopping at the threshold. It reached the end of
+the lane either way.
+
+### 10.6 What this does not do
+
+- **The absolute estimate drifts sideways along the lane.** The lane's measured
+  direction is about 0.5° out after anchoring, and `/row_pose` places the rover
+  against that straight line, so the EKF's sideways estimate is out by ~22 cm by
+  the end of 21 m. None of R1–R7 depend on it — they are all lane-relative, and
+  the rover is physically centred to 3.5 cm — but any consumer of the absolute
+  pose should know. The obvious fix, letting the stored lane direction follow
+  the measured one, was **rejected**: the row heading is what bounds IMU drift,
+  and slaving the lane to the IMU would make heading pure dead reckoning.
+- **The lane must be straight.** Both the fit and the anchored reference assume
+  it. A curved lane needs the straight-line fit replaced by a spline or an arc.
+- **One lane per run.** Entering the lane, driving it and stopping at the end;
+  turning at the end into the next lane is a separate problem.
+- **Plants are rigid boxes.** Real foliage moves, is partly transparent to a
+  LiDAR, and returns noisier ranges.
+- **Results are one run per case,** enough to show the behaviour, not to put an
+  error bar on it.

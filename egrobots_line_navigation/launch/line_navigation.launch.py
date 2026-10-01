@@ -11,7 +11,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
 
@@ -24,14 +24,16 @@ def generate_launch_description():
         launch_arguments={'rviz': LaunchConfiguration('rviz'),
                           'gui': LaunchConfiguration('gui'),
                           'world': LaunchConfiguration('world'),
-                          'row_correction': LaunchConfiguration('row_correction')}.items())
+                          'row_correction': LaunchConfiguration('row_correction'),
+                          'row_params': LaunchConfiguration('row_params')}.items())
 
     navigator = Node(
         package='egrobots_line_navigation',
         executable='line_navigator_node',
         name='line_navigator_node',
         output='screen',
-        parameters=[os.path.join(pkg_share, 'config', 'line_params.yaml'),
+        parameters=[PathJoinSubstitution([pkg_share, 'config',
+                                          LaunchConfiguration('nav_params')]),
                     {'use_sim_time': True}],
         remappings=[('/cmd_vel', '/diff_drive_controller/cmd_vel_unstamped')],
     )
@@ -41,6 +43,8 @@ def generate_launch_description():
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('world', default_value='egrobots_world.world'),
         DeclareLaunchArgument('row_correction', default_value='true'),
+        DeclareLaunchArgument('row_params', default_value='row_road.yaml'),
+        DeclareLaunchArgument('nav_params', default_value='line_params.yaml'),
         simulation,
         navigator,
     ])

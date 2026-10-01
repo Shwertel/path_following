@@ -22,8 +22,14 @@ The road geometry (a point on the centreline, its direction, and the lane width)
 is anchored in the odom frame from the first scans, while the rover is at its
 start pose and odom is still exact. Nothing about the road is hard-coded.
 
-The result is published as a PoseWithCovarianceStamped for robot_localization,
-with the covariance rotated so it is tight across the road and loose along it.
+Two things come out of each scan. `/row_pose` is an absolute pose for the EKF, a
+PoseWithCovarianceStamped whose covariance is rotated to be tight across the
+road and loose along it. `/lane_centreline` is the lane measured **here and
+now** - the centre between the two rows at the rover's current position, and
+their direction - which is what a controller should follow when the lane is not
+perfectly straight or symmetrical, as a greenhouse crop lane is not. The stored
+width tracks the measured one slowly, so a lane that pinches or widens is
+followed rather than rejected.
 """
 
 import math
@@ -55,9 +61,10 @@ def yaw_of(q):
 def fit_line(points, beta_hint, iterations, threshold, rng):
     """RANSAC line fit, refined by PCA on the inliers.
 
-    Returns (beta, s, inliers, span) — the line direction oriented within 90 deg
-    of beta_hint, its signed offset along that direction's left normal, the
-    inlier count, and how much road the inliers cover — or None.
+    Returns (beta, s, inliers, span, nearest) — the line direction oriented
+    within 90 deg of beta_hint, its signed offset along that direction's left
+    normal, the inlier count, how much road the inliers cover, and how far ahead
+    the nearest of them is — or None.
     """
     n = len(points)
     if n < 2:
@@ -88,7 +95,8 @@ def fit_line(points, beta_hint, iterations, threshold, rng):
     direction = np.array([math.cos(beta), math.sin(beta)])
     normal = np.array([-math.sin(beta), math.cos(beta)])
     along = inliers @ direction
-    return beta, float(mean @ normal), len(inliers), float(along.max() - along.min())
+    return (beta, float(mean @ normal), len(inliers),
+            float(along.max() - along.min()), float(along.min()))
 
 
 class RowLocalizerNode(Node):
@@ -120,7 +128,19 @@ class RowLocalizerNode(Node):
         self.declare_parameter('max_heading_disagreement_deg', 25.0)
         self.declare_parameter('max_width_error', 0.5)
 
+        # A road's lane width is fixed; a greenhouse lane's is not. The stored
+        # width follows the measured one at this rate per scan, so the width
+        # check stays a sanity check rather than a straitjacket.
+        self.declare_parameter('width_tracking_gain', 0.05)
+
         self.declare_parameter('anchor_scans', 10)
+        # Anchor the lane only once its sides are level with the rover. A row
+        # seen entirely from in front is seen end-on: the scan grazes the ends
+        # of the plants instead of their faces, which reads the lane as wider
+        # than it is and its direction as a degree or so off. Anchored from
+        # there, every later position is measured against a line that is not
+        # quite the lane's, and the error grows with distance along it.
+        self.declare_parameter('anchor_max_leading', 1.0)
         self.declare_parameter('lateral_std', 0.05)
         self.declare_parameter('heading_std_deg', 1.5)
         self.declare_parameter('along_std', 50.0)
@@ -136,6 +156,7 @@ class RowLocalizerNode(Node):
                              reliability=ReliabilityPolicy.RELIABLE)
         self.measurement_pub = self.create_publisher(PoseWithCovarianceStamped, '/row_pose', 10)
         self.centreline_pub = self.create_publisher(PoseStamped, '/road_centreline', latched)
+        self.lane_pub = self.create_publisher(PoseStamped, '/lane_centreline', 10)
         self.marker_pub = self.create_publisher(MarkerArray, '/row_markers', 10)
 
         self.tf_buffer = Buffer()
@@ -174,13 +195,13 @@ class RowLocalizerNode(Node):
                           self.get_parameter('ransac_threshold').value, self.rng)
         if result is None:
             return None
-        beta, s, count, span = result
+        beta, s, count, span, nearest = result
         max_disagreement = math.radians(self.get_parameter('max_heading_disagreement_deg').value)
         if (count < self.get_parameter('min_inliers').value
                 or span < self.get_parameter('min_span').value
                 or abs(wrap(beta - beta_hint)) > max_disagreement):
             return None
-        return beta, s
+        return beta, s, nearest
 
     # ------------------------------------------------------------------
 
@@ -207,8 +228,15 @@ class RowLocalizerNode(Node):
         left = self.fit(points[in_window & (y > side_min) & (y < side_max)], 0.0)
         right = self.fit(points[in_window & (y < -side_min) & (y > -side_max)], 0.0)
         if left is None or right is None:
-            self.get_logger().warn('Anchoring: need both car rows in view',
+            self.get_logger().warn('Anchoring: need both rows in view',
                                    throttle_duration_sec=5.0)
+            return
+        leading = max(left[2], right[2])
+        if leading > self.get_parameter('anchor_max_leading').value:
+            self.get_logger().warn(
+                f'Anchoring: both rows still {leading:.1f} m ahead — waiting '
+                f'until they are beside the rover', throttle_duration_sec=5.0)
+            self.anchor_samples.clear()
             return
 
         beta = math.atan2(math.sin(left[0]) + math.sin(right[0]),
@@ -278,6 +306,12 @@ class RowLocalizerNode(Node):
             beta = math.atan2(math.sin(left[0]) + math.sin(right[0]),
                               math.cos(left[0]) + math.cos(right[0]))
             rows, inflation = 'both', 1.0
+            # Follow a lane that pinches or widens instead of fighting it. Only
+            # a measurement that already passed the width check moves the
+            # stored width, and it moves it slowly.
+            gain = self.get_parameter('width_tracking_gain').value
+            width += gain * ((left[1] - right[1]) - width)
+            self.road = (cx, cy, phi, width)
         elif left:
             e, beta, rows = width / 2 - left[1], left[0], 'left'
             inflation = self.get_parameter('single_row_inflation').value
@@ -295,6 +329,7 @@ class RowLocalizerNode(Node):
         my = cy + s_along * u[1] + e * n[1]
         heading = wrap(phi - beta)
 
+        self.publish_lane(msg, e, beta, pose)
         self.publish_markers(msg, left, right, pose)
 
         self.get_logger().info(
@@ -326,6 +361,28 @@ class RowLocalizerNode(Node):
         out.pose.covariance = cov
         self.measurement_pub.publish(out)
 
+    def publish_lane(self, msg, e, beta, pose):
+        """The lane as measured at the rover right now, in odom.
+
+        Where `/road_centreline` is the straight line anchored once at the
+        start, this is the centre between the two rows *here*, with their local
+        direction. On a road the two coincide; in a greenhouse, where the rows
+        wander and the lane changes width, this is the one worth steering by -
+        it is what "centred between the two sides" actually means at this point
+        in the lane. It is published only when a measurement was made, so a
+        consumer can tell a stale lane from a fresh one by its stamp.
+        """
+        px, py, theta = pose
+        direction = wrap(theta + beta)
+        lane = PoseStamped()
+        lane.header.stamp = msg.header.stamp
+        lane.header.frame_id = self.get_parameter('reference_frame').value
+        lane.pose.position.x = px + e * math.sin(direction)
+        lane.pose.position.y = py - e * math.cos(direction)
+        lane.pose.orientation.z = math.sin(direction / 2.0)
+        lane.pose.orientation.w = math.cos(direction / 2.0)
+        self.lane_pub.publish(lane)
+
     def publish_markers(self, msg, left, right, pose):
         """Draw the fitted rows in odom so the fit can be checked in RViz."""
         px, py, theta = pose
@@ -340,7 +397,7 @@ class RowLocalizerNode(Node):
                 marker.action = Marker.DELETE
                 markers.markers.append(marker)
                 continue
-            beta, s = fit
+            beta, s = fit[0], fit[1]
             marker.type = Marker.LINE_STRIP
             marker.action = Marker.ADD
             marker.scale.x = 0.06

@@ -105,6 +105,26 @@ class LineNavigator(Node):
         self.declare_parameter('side_clearance', 0.5)
         self.declare_parameter('side_window_deg', 20.0)
 
+        # Steer by the lane measured at the rover rather than by the straight
+        # line anchored at the start. In a greenhouse the crop rows wander and
+        # the lane changes width, so "centred between the two sides" is a local
+        # question; on a straight road the two answers coincide.
+        self.declare_parameter('use_lane_centring', True)
+        self.declare_parameter('lane_timeout', 1.0)
+        # Keeping off the sides. Inside min_side_clearance the rover is pushed
+        # away from the near side and slowed; with both sides inside
+        # stop_side_clearance it stops rather than squeeze through.
+        self.declare_parameter('min_side_clearance', 0.0)
+        self.declare_parameter('stop_side_clearance', 0.2)
+        self.declare_parameter('side_push_gain', 1.5)
+        self.declare_parameter('side_min_speed_scale', 0.3)
+        self.declare_parameter('side_look_ahead', 1.2)
+        self.declare_parameter('side_look_behind', 0.4)
+        # Clearances are measured from the side of the rover, not from the
+        # LiDAR at its centre, so the numbers mean what they say: 0.25 m is
+        # 0.25 m of air beside the bodywork.
+        self.declare_parameter('rover_half_width', 0.32)
+
         self.declare_parameter('reference_frame', 'odom')
         self.declare_parameter('robot_frame', 'base_link')
 
@@ -122,6 +142,7 @@ class LineNavigator(Node):
         self.goal_active = False
         self.line = None            # (ax, ay, ux, uy, nx, ny, length)
         self.road = None            # (cx, cy, phi) from row_localizer_node
+        self.lane = None            # (cx, cy, phi, stamp) measured this scan
 
         scan_group = ReentrantCallbackGroup()
         action_group = ReentrantCallbackGroup()
@@ -137,6 +158,8 @@ class LineNavigator(Node):
                              reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(PoseStamped, '/road_centreline', self.road_callback,
                                  latched, callback_group=scan_group)
+        self.create_subscription(PoseStamped, '/lane_centreline', self.lane_callback,
+                                 10, callback_group=scan_group)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -177,6 +200,103 @@ class LineNavigator(Node):
             f'Road centreline received: through ({msg.pose.position.x:.2f}, '
             f'{msg.pose.position.y:.2f}) heading {math.degrees(phi):+.2f} deg; '
             f'driving {abs(offset):.2f} m {side} it')
+
+    def lane_callback(self, msg):
+        """The lane as measured at the rover on the latest scan.
+
+        Unlike the anchored centreline this arrives per scan and goes stale: if
+        both sides disappear the localizer stops publishing, and after
+        lane_timeout the controller falls back to the straight A->B line, which
+        the EKF is still propagating. That is what carries the rover across a
+        gap in a crop row.
+        """
+        q = msg.pose.orientation
+        phi = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        with self._lock:
+            self.lane = (msg.pose.position.x, msg.pose.position.y, phi,
+                         self.get_clock().now().nanoseconds * 1e-9)
+
+    def steering_reference(self, x, y, line_cross):
+        """What to steer by: (cross, heading, using_lane).
+
+        The measured lane when it is fresh, otherwise the straight line through
+        A and B.
+        """
+        if not self.get_parameter('use_lane_centring').value:
+            return line_cross, self.line_heading(), False
+        with self._lock:
+            lane = self.lane
+        if lane is None:
+            return line_cross, self.line_heading(), False
+        cx, cy, phi, stamp = lane
+        age = self.get_clock().now().nanoseconds * 1e-9 - stamp
+        if age > self.get_parameter('lane_timeout').value:
+            return line_cross, self.line_heading(), False
+        # Distance left of the measured lane centre, less where in the lane we
+        # mean to be: lane_offset applies here exactly as it does to the line
+        # through A and B, so a rover told to keep right still keeps right.
+        cross = -(x - cx) * math.sin(phi) + (y - cy) * math.cos(phi)
+        return cross - self.get_parameter('lane_offset').value, phi, True
+
+    def side_clearances(self, msg):
+        """Air beside the rover, left and right, in metres.
+
+        Only returns beside the rover count - from side_look_behind behind it to
+        side_look_ahead in front - so an obstacle straight ahead does not read
+        as a side that is closing in. The rover's half width is taken off, so
+        zero means its side is touching.
+        """
+        if msg is None:
+            return float('inf'), float('inf')
+        ahead = self.get_parameter('side_look_ahead').value
+        behind = -self.get_parameter('side_look_behind').value
+        left, right = float('inf'), float('inf')
+        angle = msg.angle_min
+        for r in msg.ranges:
+            if 0.0 < r < msg.range_max:
+                forward = r * math.cos(angle)
+                if behind < forward < ahead:
+                    lateral = r * math.sin(angle)
+                    if lateral > 0.0:
+                        left = min(left, lateral)
+                    else:
+                        right = min(right, -lateral)
+            angle += msg.angle_increment
+        half = self.get_parameter('rover_half_width').value
+        return max(0.0, left - half), max(0.0, right - half)
+
+    def side_safety(self, msg, cross):
+        """R6. Returns (steering cross, speed scale, pinched).
+
+        Inside min_side_clearance the near side adds to the cross-track error,
+        which the controller already turns into a heading away from it, and the
+        speed is scaled down with the remaining room. The two mechanisms are the
+        ones already in the controller, so there is no separate avoidance state
+        to get stuck in. If both sides are inside stop_side_clearance the lane is
+        narrower than the rover can safely take and it stops instead.
+        """
+        margin = self.get_parameter('min_side_clearance').value
+        if margin <= 0.0:
+            return cross, 1.0, False
+        left, right = self.side_clearances(msg)
+        stop = self.get_parameter('stop_side_clearance').value
+        if left < stop and right < stop:
+            return cross, 0.0, True
+
+        gain = self.get_parameter('side_push_gain').value
+        push = 0.0
+        if left < margin:
+            push += gain * (margin - left)     # too close on the left: go right
+        if right < margin:
+            push -= gain * (margin - right)
+        tightest = min(left, right)
+        if tightest < margin:
+            floor = self.get_parameter('side_min_speed_scale').value
+            scale = max(floor, tightest / margin)
+        else:
+            scale = 1.0
+        return cross + push, scale, False
 
     def update_pose_from_tf(self):
         try:
@@ -408,7 +528,8 @@ class LineNavigator(Node):
             cmd.linear.x = speed
         return error
 
-    def follow_line_step(self, cmd, cross, returning=False):
+    def follow_line_step(self, cmd, cross, returning=False, heading=None,
+                         speed_scale=1.0):
         """Steer along the line, biased by how far off it we are.
 
         The correction angle is proportional to cross-track error, so a rover on
@@ -429,15 +550,18 @@ class LineNavigator(Node):
         # correction. Without this the desired heading twitches with every
         # centimetre of cross-track noise, and since a heading change now means
         # a pivot, the rover would stop and turn constantly instead of driving.
+        if heading is None:
+            heading = self.line_heading()
         if abs(cross) < deadband:
-            desired = self.line_heading()
+            desired = heading
         else:
             correction = max(-max_correction, min(max_correction, -kp * cross))
-            desired = self.line_heading() + correction
+            desired = heading + correction
 
-        return self.steer_towards(cmd, desired,
-                                  self.get_parameter('linear_speed').value,
-                                  angular_speed)
+        return self.steer_towards(
+            cmd, desired,
+            self.get_parameter('linear_speed').value * speed_scale,
+            angular_speed)
 
     def stop(self):
         self.cmd_publisher.publish(Twist())
@@ -463,6 +587,16 @@ class LineNavigator(Node):
     def cancel_callback(self, goal_handle):
         self.get_logger().info('Cancel requested')
         return CancelResponse.ACCEPT
+
+    def make_feedback(self, distance, along, cross, x, y, state, iteration):
+        feedback = FollowLine.Feedback()
+        feedback.distance_to_goal = distance
+        feedback.distance_along_line = along
+        feedback.cross_track_error = cross
+        feedback.current_position = Point(x=x, y=y, z=0.0)
+        feedback.state = state
+        feedback.iteration = iteration
+        return feedback
 
     def execute_callback(self, goal_handle):
         request = goal_handle.request
@@ -491,6 +625,7 @@ class LineNavigator(Node):
         phase_started = time.time()
         iteration = 1
         max_cross = 0.0
+        steering_by_lane = False
         best_distance = float('inf')
         best_time = time.time()
         result = FollowLine.Result()
@@ -504,10 +639,14 @@ class LineNavigator(Node):
                 x, y, _, _ = self.pose()
                 along, cross = self.project(x, y)
                 distance = math.hypot(goal.x - x, goal.y - y)
-                max_cross = max(max_cross, abs(cross))
 
                 # --- R9: arrived ---
-                if distance < tolerance:
+                # Arrival is progress ALONG the line, not distance to a point.
+                # Judged by distance, a rover whose estimate is off sideways -
+                # which it will be, by however much the lane's measured
+                # direction is out - can pass the end of the lane without ever
+                # coming within tolerance of B, and drive on out of the lane.
+                if along >= self.line[6] - tolerance or distance < tolerance:
                     self.stop()
                     goal_handle.succeed()
                     result.success = True
@@ -536,6 +675,25 @@ class LineNavigator(Node):
 
                 cmd = Twist()
                 msg, closest = self.read_cone()
+                # R3/R5/R7: steer by the lane measured here, when there is one.
+                cross, heading, on_lane = self.steering_reference(x, y, cross)
+                if on_lane != steering_by_lane:
+                    steering_by_lane = on_lane
+                    self.get_logger().info(
+                        'Steering by the measured lane' if on_lane else
+                        'Lane measurement lost - steering by the A->B line')
+                max_cross = max(max_cross, abs(cross))
+                # R6: keep off the sides.
+                steer_cross, speed_scale, pinched = self.side_safety(msg, cross)
+                if pinched:
+                    self.stop()
+                    self.get_logger().warn(
+                        'Both sides within the stop clearance - holding',
+                        throttle_duration_sec=2.0)
+                    goal_handle.publish_feedback(self.make_feedback(
+                        distance, along, cross, x, y, 'BLOCKED', iteration))
+                    time.sleep(CONTROL_PERIOD)
+                    continue
 
                 # Obstacle avoidance outranks everything, including the pause:
                 # it reads only the LiDAR and never waits on the cycle timer.
@@ -554,7 +712,8 @@ class LineNavigator(Node):
                 elif abs(cross) > on_line:
                     # --- R7: off the line after a detour, cut back to it ---
                     phase = 'RETURNING'
-                    self.follow_line_step(cmd, cross, returning=True)
+                    self.follow_line_step(cmd, steer_cross, returning=True,
+                                          heading=heading, speed_scale=speed_scale)
                 else:
                     # --- R2/R4: walking along the line ---
                     if phase != 'WALKING':
@@ -568,21 +727,16 @@ class LineNavigator(Node):
                             f'Pausing {pause_duration:.0f} s '
                             f'(iteration {iteration}, {distance:.2f} m to go)')
                     else:
-                        self.follow_line_step(cmd, cross)
+                        self.follow_line_step(cmd, steer_cross, heading=heading,
+                                              speed_scale=speed_scale)
 
                 if phase not in ('PAUSED',):
                     if cmd.linear.x > 0.0 and distance < approach:
                         cmd.linear.x *= max(0.2, distance / approach)
                     self.cmd_publisher.publish(cmd)
 
-                feedback = FollowLine.Feedback()
-                feedback.distance_to_goal = distance
-                feedback.distance_along_line = along
-                feedback.cross_track_error = cross
-                feedback.current_position = Point(x=x, y=y, z=0.0)
-                feedback.state = phase
-                feedback.iteration = iteration
-                goal_handle.publish_feedback(feedback)
+                goal_handle.publish_feedback(self.make_feedback(
+                    distance, along, cross, x, y, phase, iteration))
 
                 time.sleep(CONTROL_PERIOD)
         finally:

@@ -1,0 +1,56 @@
+# Navigator settings for a greenhouse crop lane.
+#
+# The lane is about 1.6 m wide against the road's 6 m, so everything is scaled
+# down: the rover drives slower, keeps a tighter deadband, and is pushed away
+# from a side it gets within 0.4 m of. It drives the lane continuously - the
+# walk/pause cycle belongs to the previous task's brief, not this one.
+line_navigator_node:
+  ros__parameters:
+    walk_duration: 1000000.0     # effectively no pause: drive the lane in one go
+    pause_duration: 0.0
+    linear_speed: 0.35
+    angular_speed: 0.8
+    min_pivot_speed: 0.3
+
+    cross_track_kp: 1.5
+    max_correction_deg: 50.0
+    align_tolerance_deg: 4.0
+    cross_track_deadband: 0.03
+    heading_kp: 1.5
+    on_line_threshold: 0.15
+    goal_tolerance: 0.30
+    goal_approach_distance: 1.0
+
+    # R6: stay off the sides. Clearances are air beside the bodywork. With a
+    # 1.6 m lane and a 0.64 m rover there is about 0.48 m each side when
+    # centred, so 0.25 m means it has used half its margin and gets pushed
+    # back, and 0.10 m means it has no business continuing.
+    min_side_clearance: 0.25
+    stop_side_clearance: 0.10
+    rover_half_width: 0.32
+    side_push_gain: 1.5
+    side_min_speed_scale: 0.3
+    side_look_ahead: 1.2
+    side_look_behind: 0.4
+
+    # R3/R5/R7: steer by the lane measured at the rover, not by a straight line.
+    use_lane_centring: true
+    lane_timeout: 1.0
+    use_road_centreline: true
+    lane_offset: 0.0             # centred between the two sides
+
+    # Obstacle avoidance is not part of this brief; the plants are the sides,
+    # not obstacles. safe_distance is low enough that the rows never trigger it.
+    safe_distance: 0.45
+    clear_distance: 0.7
+    cone_angle_deg: 20.0
+    direction_scan_deg: 90.0
+    clearing_distance: 0.8
+    side_clearance: 0.5
+    side_window_deg: 20.0
+
+    stall_timeout: 25.0
+    stall_min_progress: 0.15
+
+    reference_frame: "odom"
+    robot_frame: "base_link"
