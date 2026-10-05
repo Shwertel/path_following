@@ -27,12 +27,24 @@ diff_drive_controller:
     # simulated actuator necessarily closes a velocity loop on joint state, so
     # the controller reads the wheels to *drive* them.
     #
-    # What is guaranteed is that no wheel-derived odometry reaches localisation:
-    # this line stops the controller publishing odom -> base_link, and nothing
-    # in this package subscribes to /diff_drive_controller/odom. The odom frame
-    # is published by ekf_filter_node from the IMU and the commanded velocity
-    # only — see config/ekf.yaml.
+    # What is guaranteed is that no wheel-derived odometry reaches localisation
+    # IN THAT TASK: this line stops the controller publishing odom -> base_link,
+    # and config/ekf.yaml subscribes to no wheel topic. The odom frame is
+    # published by ekf_filter_node from the IMU and the commanded velocity only.
+    #
+    # The greenhouse task is not under that constraint and does fuse the
+    # controller's /diff_drive_controller/odom — see config/ekf_greenhouse.yaml.
+    # The TF stays off either way: the EKF owns odom -> base_link.
     enable_odom_tf: false
+
+    # What the wheel odometry is worth, for whoever fuses it (the greenhouse
+    # profile does; the straight-line one is forbidden to). Forward and
+    # sideways are usable; the yaw rate is given a huge variance because a
+    # skid-steer turns by scrubbing and its encoder-derived rotation measured
+    # about 40% of commanded on this rover.
+    twist_covariance_diagonal: [0.01, 0.01, 1000000.0, 1000000.0, 1000000.0, 1000000.0]
+    pose_covariance_diagonal: [0.01, 0.01, 1000000.0, 1000000.0, 1000000.0, 1000000.0]
+    open_loop: false
 
     cmd_vel_timeout: 0.5
     use_stamped_vel: false

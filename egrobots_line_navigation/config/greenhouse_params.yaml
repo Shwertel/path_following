@@ -36,7 +36,10 @@ line_navigator_node:
     # R3/R5/R7: steer by the lane measured at the rover, not by a straight line.
     use_lane_centring: true
     lane_timeout: 1.0
-    use_road_centreline: true
+    # A and B are given per lane by the mission, so there is nothing to project
+    # them onto - and projecting onto the previous lane's centreline would put
+    # them in the wrong lane entirely.
+    use_road_centreline: false
     lane_offset: 0.0             # centred between the two sides
 
     # Obstacle avoidance is not part of this brief; the plants are the sides,

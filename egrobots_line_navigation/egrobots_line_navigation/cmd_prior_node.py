@@ -11,11 +11,23 @@ stalled, or the rover being pushed. Correcting that needs an absolute reference,
 which for this sensor suite means matching LiDAR scans against features in the
 environment.
 
-Only linear x is given a usable covariance. Angular velocity is deliberately
-left with a huge covariance so the filter ignores it: on a skid-steer, commanded
-rotation bears little relation to actual rotation (measured at roughly 40%),
-whereas commanded forward motion tracked reality at 98-102%. Heading comes from
-the IMU instead.
+Linear x and y are both given usable covariances. Forward speed because the
+command tracked reality at 98-102%; sideways speed because the rover has no way
+to drive sideways, so zero is a real measurement rather than an absence of one.
+It is not exactly zero - a skid-steer scrubs sideways while it turns - hence a
+variance that admits a slide of a few centimetres a second rather than claiming
+certainty.
+
+That distinction matters. Left unmeasured, sideways velocity is a free state:
+during a long pivot, with no position measurement to anchor it, the estimate
+slides sideways at whatever the filter last believed. A 92 degree turn between
+greenhouse lanes drifted the estimate 0.74 m sideways while the rover stood
+still on the spot, and it then "corrected" towards a lane centre that was not
+where it thought, and drove into the plants.
+
+Angular velocity is deliberately left with a huge covariance so the filter
+ignores it: on a skid-steer, commanded rotation bears little relation to actual
+rotation (measured at roughly 40%). Heading comes from the IMU instead.
 """
 
 import rclpy
@@ -34,6 +46,8 @@ class CmdPriorNode(Node):
         self.declare_parameter('output_topic', '/cmd_vel_prior')
         self.declare_parameter('frame_id', 'base_link')
         self.declare_parameter('linear_variance', 0.02)
+        # Sideways: zero, give or take the scrub of a turning skid-steer.
+        self.declare_parameter('lateral_variance', 0.01)
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('command_timeout', 0.5)
 
@@ -74,11 +88,12 @@ class CmdPriorNode(Node):
         out.header.stamp = self.get_clock().now().to_msg()
         out.header.frame_id = self.get_parameter('frame_id').value
         out.twist.twist = msg
+        out.twist.twist.linear.y = 0.0      # the constraint, stated explicitly
 
         variance = self.get_parameter('linear_variance').value
         covariance = [0.0] * 36
         covariance[0] = variance     # vx — trusted
-        covariance[7] = LARGE        # vy — a diff drive cannot move sideways
+        covariance[7] = self.get_parameter('lateral_variance').value  # vy — ~0
         covariance[14] = LARGE       # vz
         covariance[21] = LARGE       # vroll
         covariance[28] = LARGE       # vpitch

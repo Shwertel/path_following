@@ -25,7 +25,8 @@ def generate_launch_description():
                           'gui': LaunchConfiguration('gui'),
                           'world': LaunchConfiguration('world'),
                           'row_correction': LaunchConfiguration('row_correction'),
-                          'row_params': LaunchConfiguration('row_params')}.items())
+                          'row_params': LaunchConfiguration('row_params'),
+                          'ekf_params': LaunchConfiguration('ekf_params')}.items())
 
     navigator = Node(
         package='egrobots_line_navigation',
@@ -44,6 +45,7 @@ def generate_launch_description():
         DeclareLaunchArgument('world', default_value='egrobots_world.world'),
         DeclareLaunchArgument('row_correction', default_value='true'),
         DeclareLaunchArgument('row_params', default_value='row_road.yaml'),
+        DeclareLaunchArgument('ekf_params', default_value='ekf.yaml'),
         DeclareLaunchArgument('nav_params', default_value='line_params.yaml'),
         simulation,
         navigator,

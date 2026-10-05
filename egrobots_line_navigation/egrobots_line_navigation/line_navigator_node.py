@@ -124,6 +124,13 @@ class LineNavigator(Node):
         # LiDAR at its centre, so the numbers mean what they say: 0.25 m is
         # 0.25 m of air beside the bodywork.
         self.declare_parameter('rover_half_width', 0.32)
+        # Stall detection that cannot be fooled by slipping wheels: if the
+        # rover is moving, the view changes. Neither the commanded velocity nor
+        # the wheel encoders can tell a rover that is driving from one held
+        # against a plant with its wheels spinning — measured, both let the
+        # estimate run 12 m while the rover sat still. The scan cannot.
+        self.declare_parameter('scan_stall_timeout', 6.0)
+        self.declare_parameter('scan_stall_change', 0.03)
 
         self.declare_parameter('reference_frame', 'odom')
         self.declare_parameter('robot_frame', 'base_link')
@@ -143,6 +150,7 @@ class LineNavigator(Node):
         self.line = None            # (ax, ay, ux, uy, nx, ny, length)
         self.road = None            # (cx, cy, phi) from row_localizer_node
         self.lane = None            # (cx, cy, phi, stamp) measured this scan
+        self.stall_reference = None     # (ranges, time) the view last changed
 
         scan_group = ReentrantCallbackGroup()
         action_group = ReentrantCallbackGroup()
@@ -265,6 +273,39 @@ class LineNavigator(Node):
             angle += msg.angle_increment
         half = self.get_parameter('rover_half_width').value
         return max(0.0, left - half), max(0.0, right - half)
+
+    def scan_is_frozen(self, msg, moving):
+        """True when the rover is being commanded to move but the view is not
+        changing — it is held up, whatever the wheels say.
+
+        Compares every tenth beam against a reference scan. Any real motion
+        changes ranges by far more than the threshold within a second; a rover
+        pinned against a plant reproduces the same scan exactly.
+
+        Its limit, measured: a rover pinned but still rocking - wheels
+        scrabbling, yaw swinging over 25 degrees - changes the view plenty, and
+        this does not fire. Catching that means comparing the motion the scans
+        imply against the motion that was commanded, which is scan matching.
+        """
+        if msg is None or not moving:
+            self.stall_reference = None
+            return False
+        sample = [r for r in msg.ranges[::10] if 0.0 < r < msg.range_max]
+        if len(sample) < 10:
+            self.stall_reference = None
+            return False
+
+        now = time.time()
+        if self.stall_reference is None or len(self.stall_reference[0]) != len(sample):
+            self.stall_reference = (sample, now)
+            return False
+
+        reference, since = self.stall_reference
+        change = sum(abs(a - b) for a, b in zip(sample, reference)) / len(sample)
+        if change > self.get_parameter('scan_stall_change').value:
+            self.stall_reference = (sample, now)
+            return False
+        return now - since > self.get_parameter('scan_stall_timeout').value
 
     def side_safety(self, msg, cross):
         """R6. Returns (steering cross, speed scale, pinched).
@@ -734,6 +775,17 @@ class LineNavigator(Node):
                     if cmd.linear.x > 0.0 and distance < approach:
                         cmd.linear.x *= max(0.2, distance / approach)
                     self.cmd_publisher.publish(cmd)
+
+                if self.scan_is_frozen(msg, cmd.linear.x > 0.05):
+                    self.stop()
+                    goal_handle.abort()
+                    result.success = False
+                    result.message = (
+                        f'Aborted: driving, but the view has not changed in '
+                        f'{self.get_parameter("scan_stall_timeout").value:.0f} s — '
+                        f'the rover is held up at ({x:.2f}, {y:.2f})')
+                    self.get_logger().warn(result.message)
+                    break
 
                 goal_handle.publish_feedback(self.make_feedback(
                     distance, along, cross, x, y, phase, iteration))

@@ -34,6 +34,7 @@ def generate_launch_description():
             launch_arguments={'world': 'greenhouse_world.world',
                               'nav_params': 'greenhouse_params.yaml',
                               'row_params': 'row_greenhouse.yaml',
+                              'ekf_params': 'ekf_greenhouse.yaml',
                               'rviz': LaunchConfiguration('rviz'),
                               'gui': LaunchConfiguration('gui'),
                               'row_correction': LaunchConfiguration('row_correction'),

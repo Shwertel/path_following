@@ -41,6 +41,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped
 from sensor_msgs.msg import LaserScan
+from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import (Buffer, TransformListener,
                      LookupException, ExtrapolationException, ConnectivityException)
@@ -162,10 +163,27 @@ class RowLocalizerNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
+        self.create_service(Trigger, '~/reset_lane', self.reset_lane)
 
         self.get_logger().info('Row localizer waiting for both car rows to anchor the road')
 
     # ------------------------------------------------------------------
+
+    def reset_lane(self, request, response):
+        """Forget the anchored lane and anchor the next one from scratch.
+
+        The anchor is one lane's geometry: its direction, its width, and where
+        its centre runs. Drive into a different lane and none of that applies,
+        and the gating would look for rows where this lane has none. A sweep of
+        a greenhouse calls this on entering each lane.
+        """
+        self.road = None
+        self.anchor_samples.clear()
+        self.scans_used = self.scans_skipped = 0
+        self.get_logger().info('Lane reset — waiting to anchor the next one')
+        response.success = True
+        response.message = 'Lane forgotten; will anchor when rows are beside the rover'
+        return response
 
     def lookup(self, target, source):
         try:

@@ -22,8 +22,14 @@ row_localizer_node:
     max_width_error: 0.45
     width_tracking_gain: 0.08
 
-    anchor_scans: 10
-    anchor_max_leading: 0.5
+    anchor_scans: 25             # average the ragged edge over ~1 m of travel
+    # Anchor as the rover approaches the lane's mouth, not after it is inside.
+    # Measured end-on the lane's DIRECTION comes out about a degree off, which
+    # shows up as drift in the absolute estimate - but the lane's CENTRE comes
+    # out right, and that is what the rover steers by. Waiting until the rows
+    # were beside it meant entering a lane blind: the worst entry came within
+    # 11 cm of the plants before the lane could be measured.
+    anchor_max_leading: 2.0
     lateral_std: 0.08            # the lane's own centre wanders a little
     heading_std_deg: 2.0
     along_std: 50.0

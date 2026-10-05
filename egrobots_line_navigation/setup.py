@@ -30,6 +30,7 @@ setup(
             'pose_logger_node = egrobots_line_navigation.pose_logger_node:main',
             'row_localizer_node = egrobots_line_navigation.row_localizer_node:main',
             'spawn_obstacles = egrobots_line_navigation.spawn_obstacles:main',
+            'greenhouse_mission_node = egrobots_line_navigation.greenhouse_mission_node:main',
             'imu_relay_node = egrobots_line_navigation.imu_relay_node:main',
             'manual_controller = egrobots_line_navigation.manual_controller:main',
         ],

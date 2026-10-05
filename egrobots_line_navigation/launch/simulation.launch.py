@@ -52,6 +52,9 @@ def generate_launch_description():
         DeclareLaunchArgument('row_params', default_value='row_road.yaml',
                               description='Row localizer profile in config/, '
                                           'e.g. row_greenhouse.yaml'),
+        DeclareLaunchArgument('ekf_params', default_value='ekf.yaml',
+                              description='EKF profile in config/, '
+                                          'e.g. ekf_greenhouse.yaml'),
         gazebo_launch,
         Node(package='robot_state_publisher', executable='robot_state_publisher',
              name='robot_state_publisher', output='screen',
@@ -85,7 +88,8 @@ def generate_launch_description():
                               LaunchConfiguration('row_correction'), value_type=bool)}]),
         Node(package='robot_localization', executable='ekf_node',
              name='ekf_filter_node', output='screen',
-             parameters=[os.path.join(pkg_share, 'config', 'ekf.yaml'),
+             parameters=[PathJoinSubstitution([pkg_share, 'config',
+                                               LaunchConfiguration('ekf_params')]),
                          {'use_sim_time': True}]),
         Node(package='rviz2', executable='rviz2', name='rviz2',
              arguments=['-d', rviz_config], parameters=[{'use_sim_time': True}],
