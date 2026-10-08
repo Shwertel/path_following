@@ -784,3 +784,123 @@ commanded, which is scan matching.
   resetting the lane before each leg, so the rover pivots on the A→B line first.
 - **One greenhouse, one layout, one run per case.** Enough to show the behaviour,
   not to put an error bar on it.
+
+---
+
+## 12. Phase 2 of the Nav2 migration: localizing against a map
+
+The sweep worked but the rover's idea of where it was drifted **2.9 m** over
+70 m, because nothing ever corrected it. This phase adds the missing frame.
+
+```bash
+ros2 launch egrobots_line_navigation greenhouse.launch.py          # as before
+ros2 launch egrobots_line_navigation localization.launch.py        # map + AMCL
+ros2 run egrobots_line_navigation greenhouse_mission_node --ros-args -p use_sim_time:=true
+```
+
+### 12.1 What changed, and what did not
+
+AMCL does **not** replace the EKF. REP-105 splits the job in two:
+
+```
+map ──(AMCL: corrects drift, may jump)──► odom ──(EKF: smooth, drifts)──► base_link
+```
+
+The EKF keeps publishing `odom → base_link`, which is what the controllers need
+— continuous, no jumps. AMCL adds `map → odom` on top. `row_localizer_node`,
+the navigator and the lane centring are untouched.
+
+The mission changed: its waypoints are now written in the **map** frame and
+converted to odom as each goal is sent. Before, each leg was planned relative to
+where the rover believed it finished the last one, which assumed the drift
+stayed put between legs. It does not — it grew 1.2 m across a single headland
+turn, which put the rover into a crop row with the clearance stop holding it
+there until the stall detector gave up.
+
+### 12.2 The map is mostly plants, and that was not the plan
+
+The plan said: map the greenhouse, erase the crop rows, let AMCL match the
+structure — walls and columns don't grow, plants do. Raycasting the saved map
+from inside a lane killed that idea:
+
+| Where the rover is | Returns from plants | Returns from structure |
+|---|---|---|
+| Mid-lane | 341 | **0** |
+| At the 2 m gap in row 2 | 341 | **0** |
+| In the headland | 125 | 168 |
+
+The crop stands 1.2–1.6 m and the LiDAR sits at 0.77 m, so inside a lane the
+rows wall the rover in completely. A structure-only map gives AMCL **nothing**
+there. So the map keeps the plants, with the consequence stated plainly: it is
+valid only as long as the crop is. How fast that decays is measurable — localize
+against this map after regenerating the world with a different plant seed — and
+has not been measured yet.
+
+Worth noting why it works at all: every plant has a jittered size and position,
+so a row is effectively a barcode rather than a repeating pattern. Real crop
+rows share that property.
+
+### 12.3 Tuning, and what it bought
+
+| AMCL error, inside a lane | Stock parameters | Tuned |
+|---|---|---|
+| Along the lane | mean 25 cm, max 96 cm | **mean 10 cm, max 37 cm** |
+| Across the lane | mean 8 cm | **mean 4 cm** |
+| Worst spike, during a turn | 127 cm | **45 cm** |
+
+Four parameters, in `config/amcl.yaml`:
+
+- **`alpha4` 0.2 → 0.4** — translation noise caused by *rotation*. The error
+  spiked during headland turns and took 28 s to recover, which is a filter too
+  confident about where a pivot leaves it. A skid-steer scrubs sideways as it
+  turns; that is a translation error caused by rotation, which is what alpha4
+  describes.
+- **`alpha3` 0.2 → 0.3** — translation noise from translation, since odometry
+  here is dead-reckoned along the lane.
+- **`update_min_d` 0.25 → 0.10** and **`update_min_a` 0.2 → 0.1** — correct
+  every 10 cm and every 6°, rather than every 25 cm, at the cost of CPU.
+
+### 12.4 Measured result
+
+One full sweep, tuned, scored against Gazebo ground truth:
+
+| | Before Phase 2 | After |
+|---|---|---|
+| Position error at the end of the sweep | 290 cm sideways | **5 cm sideways, 2 cm along** |
+| Parked from the pad centre | 36–44 cm | **24 cm** |
+| Lane centring (three lanes, mean) | 3.3 / 3.5 / 2.2 cm | 2.2 / 2.8 / 3.3 cm |
+| Closest the rover's side came to the plants | 34 cm | 37 cm |
+
+The acceptance bar was 20 cm over a sweep: **met on the mean (10–15 cm) and at
+the finish (5 cm), not on the worst case (45 cm, during a turn)**. Lane centring
+is unchanged, which is the point — AMCL fixes the global estimate and leaves the
+thing that was already good alone.
+
+### 12.5 Things that bit, worth knowing
+
+- **Both `slam_toolbox` and `amcl` default `base_frame` to `base_footprint`.**
+  This rover has no such link. Nothing errors; the node simply never works.
+- **`slam_toolbox`'s stock config has no `use_sim_time` at all.** In this
+  project that omission once integrated a velocity across 1.79 billion seconds.
+- **AMCL reports itself active several seconds before it first publishes
+  `map → odom`.** Asking too early drops the whole mission into dead reckoning
+  with nothing looking wrong — hence the 60 s wait and the explicit warning.
+- **A sensor measurement arrives in `odom`, not in the plan frame.** The bay
+  sighting was being transformed to odom twice and parked the rover 132 cm from
+  the pad; `to_plan_frame()` is the inverse that fixes it.
+- **`kill -9` on ROS 2 nodes leaves FastDDS segments in `/dev/shm`.** The next
+  run's nodes start up healthy and talk to nobody. Clear `fastrtps_*` and
+  `sem.fastrtps_*` with everything stopped. A stale `ros2 daemon` looks similar
+  but affects only CLI tools: `ros2 topic hz` works while `ros2 topic list` is
+  empty.
+
+### 12.6 Still open
+
+- **Along the lane is the weak axis** — mean 10 cm against 4 cm across. A
+  corridor of similar plants constrains sideways position well and along-lane
+  position poorly, and that is the axis the crop rows cannot help with either.
+- **The map ages with the crop.** Unmeasured; the experiment is cheap.
+- **Nothing is localized when the crop is replanted.** Real glasshouses have
+  support columns on a few-metre grid, which would be visible from inside lanes
+  and would make a structure-only map viable. This simulated greenhouse has
+  none — a gap in the model, not a law of nature.

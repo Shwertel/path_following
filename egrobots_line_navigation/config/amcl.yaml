@@ -1,0 +1,78 @@
+# Localizing against the map built by slam_toolbox (see config/slam_mapping.yaml).
+#
+# AMCL does NOT replace the EKF. The EKF keeps publishing odom -> base_link,
+# smooth and continuous, which is what the controllers need. AMCL publishes
+# map -> odom: the correction, which is allowed to jump. That is the REP-105
+# split, and it is what stops the estimate wandering metres over a sweep with
+# nothing to pull it back.
+#
+# A copy of nav2_bringup's stock AMCL parameters, changes marked CHANGED, plus
+# the map server that feeds it.
+
+map_server:
+  ros__parameters:
+    use_sim_time: true
+    yaml_filename: ""               # set on the command line
+    topic_name: "map"
+    frame_id: "map"
+
+amcl:
+  ros__parameters:
+    use_sim_time: True
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.3                     # TUNED: translation noise from translation.
+                                    # Odometry here is dead-reckoned along the lane
+                                    # and drifts about a centimetre per metre, so the
+                                    # filter should trust the scan more than the
+                                    # default assumes.
+    alpha4: 0.4                     # TUNED: translation noise from ROTATION, and the
+                                    # one that matters most here. A skid-steer scrubs
+                                    # sideways as it pivots - that slide is the whole
+                                    # reason this project measures position against
+                                    # the rows. Measured: AMCL's error spiked to 127 cm
+                                    # during a headland turn and took 28 s to recover,
+                                    # which is a filter too confident about where a
+                                    # pivot leaves it.
+    alpha5: 0.2
+    base_frame_id: "base_link"      # CHANGED: no base_footprint on this rover
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: "map"
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 10.0           # CHANGED: the sensor's real maximum
+    laser_min_range: 0.12           # CHANGED: the sensor's real minimum
+    laser_model_type: "likelihood_field"
+    max_beams: 90                   # CHANGED: 360 beams available, and inside
+                                    # a lane most land on the same two rows
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: "odom"
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    resample_interval: 1
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    save_pose_rate: 0.5
+    sigma_hit: 0.2
+    tf_broadcast: true
+    transform_tolerance: 1.0
+    update_min_a: 0.1               # TUNED: likewise for rotation, so a pivot gets
+                                    # corrected during it rather than after it.
+    update_min_d: 0.10              # TUNED: correct every 10 cm rather than every 25.
+                                    # More scan matches per metre, at more CPU.
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05
+    scan_topic: scan
+
+    # Start localized instead of waiting for a pose clicked in RViz: the rover
+    # spawns at the world origin and the map was built from there, so the map
+    # frame and Gazebo's world frame coincide.
+    set_initial_pose: true
+    initial_pose: {x: 0.0, y: 0.0, z: 0.0, yaw: 0.0}
