@@ -36,7 +36,7 @@ def generate_launch_description():
         parameters=[PathJoinSubstitution([pkg_share, 'config',
                                           LaunchConfiguration('nav_params')]),
                     {'use_sim_time': True}],
-        remappings=[('/cmd_vel', '/diff_drive_controller/cmd_vel_unstamped')],
+        remappings=[('/cmd_vel', LaunchConfiguration('cmd_vel_topic'))],
     )
 
     return LaunchDescription([
@@ -47,6 +47,10 @@ def generate_launch_description():
         DeclareLaunchArgument('row_params', default_value='row_road.yaml'),
         DeclareLaunchArgument('ekf_params', default_value='ekf.yaml'),
         DeclareLaunchArgument('nav_params', default_value='line_params.yaml'),
+        # Where the navigator's commands go. Straight to the wheels by default;
+        # through the collision monitor when one is running.
+        DeclareLaunchArgument('cmd_vel_topic',
+                              default_value='/diff_drive_controller/cmd_vel_unstamped'),
         simulation,
         navigator,
     ])

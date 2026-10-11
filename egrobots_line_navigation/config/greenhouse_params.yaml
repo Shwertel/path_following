@@ -8,7 +8,10 @@ line_navigator_node:
   ros__parameters:
     walk_duration: 1000000.0     # effectively no pause: drive the lane in one go
     pause_duration: 0.0
-    linear_speed: 0.35
+    linear_speed: 0.6               # 2.2 km/h, a brisk walk. The earlier 0.35 was
+                                    # slower than a real greenhouse robot works at,
+                                    # and the drive controller allows 1.0 m/s with
+                                    # 2.0 m/s^2 of braking.
     angular_speed: 0.8
     min_pivot_speed: 0.3
 
@@ -25,8 +28,11 @@ line_navigator_node:
     # 1.6 m lane and a 0.64 m rover there is about 0.48 m each side when
     # centred, so 0.25 m means it has used half its margin and gets pushed
     # back, and 0.10 m means it has no business continuing.
+    # Steering away from a near side stays here; STOPPING for one moved to
+    # nav2_collision_monitor, which reads the LiDAR rather than an estimate.
+    # Two things trying to stop the rover is one too many.
     min_side_clearance: 0.25
-    stop_side_clearance: 0.10
+    stop_side_clearance: 0.0
     rover_half_width: 0.32
     side_push_gain: 1.5
     side_min_speed_scale: 0.3

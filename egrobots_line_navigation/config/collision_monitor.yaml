@@ -1,0 +1,71 @@
+# nav2_collision_monitor: the last line of defence between the navigator and
+# the wheels.
+#
+# Everything else that keeps the rover off the plants reads an estimate of
+# where it is. This reads the LiDAR directly, so a wrong pose, a lost lane or
+# a confused controller cannot talk it out of stopping. It subscribes to the
+# navigator's output on cmd_vel_raw and republishes it to the drive controller,
+# slowed or zeroed.
+#
+# Zones are sized for this rover at its driving speed:
+#   body 0.60 x 0.64 m -> half length 0.30, half width 0.32
+#   0.6 m/s with 2.0 m/s^2 of braking -> 0.09 m to stop, plus reaction ~ 0.15 m
+#
+collision_monitor:
+  ros__parameters:
+    use_sim_time: true
+    base_frame_id: "base_link"      # CHANGED from base_footprint: no such link here
+    odom_frame_id: "odom"
+
+    # In from the navigator, out to the wheels. The command prior reads the
+    # OUTPUT, so when this node stops the rover the estimator is told zero too,
+    # rather than integrating motion that is not happening.
+    cmd_vel_in_topic: "cmd_vel_raw"
+    cmd_vel_out_topic: "/diff_drive_controller/cmd_vel_unstamped"
+
+    transform_tolerance: 0.5
+    source_timeout: 1.0             # CHANGED from 5.0: a 10 Hz scan that stops
+                                    # arriving should be noticed in 1 s, not 5
+    base_shift_correction: true
+    stop_pub_timeout: 2.0
+
+    polygons: ["PolygonSlow", "PolygonStop"]
+
+    # Slowdown: 0.25 m of air beside the bodywork, 0.65 m ahead of it. Centred
+    # in a 1.6 m lane the plants sit 0.23 m outside this, so normal driving
+    # does not trigger it; drifting a handful of centimetres off centre does.
+    PolygonSlow:
+      type: "polygon"
+      points: [0.95, 0.57, 0.95, -0.57, -0.45, -0.57, -0.45, 0.57]
+      action_type: "slowdown"
+      # 0.6, not the stock 0.3, because this scales the WHOLE twist - angular
+      # as well as linear. This rover does not turn at all below about
+      # 0.1 rad/s (a skid-steer must scrub its wheels sideways to rotate), and
+      # the navigator's minimum pivot command is 0.3 rad/s precisely to stay
+      # above that. Scaled by 0.3 it becomes 0.09 rad/s: the rover sits
+      # commanding a rotation it physically cannot perform, not moving forward
+      # either because a pivot sets linear to zero. Measured: frozen for 34 s
+      # until the stall detector aborted the leg. At 0.6 the slowed pivot is
+      # 0.18 rad/s, still above breakaway.
+      slowdown_ratio: 0.6
+      max_points: 5                 # ignore one or two stray rays
+      visualize: true
+      polygon_pub_topic: "polygon_slowdown"
+      enabled: true
+
+    # Stop: 0.10 m beside the bodywork, 0.25 m ahead - just over the braking
+    # distance at 0.6 m/s. Inside this the rover has no business moving.
+    PolygonStop:
+      type: "polygon"
+      points: [0.55, 0.42, 0.55, -0.42, -0.40, -0.42, -0.40, 0.42]
+      action_type: "stop"
+      max_points: 3
+      visualize: true
+      polygon_pub_topic: "polygon_stop"
+      enabled: true
+
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan"
+      enabled: true

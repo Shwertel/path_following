@@ -904,3 +904,95 @@ thing that was already good alone.
   support columns on a few-metre grid, which would be visible from inside lanes
   and would make a structure-only map viable. This simulated greenhouse has
   none — a gap in the model, not a law of nature.
+
+---
+
+## 13. Phase 3: a safety layer that cannot be argued with, and a realistic speed
+
+Everything else that keeps the rover off the plants reads an estimate of where
+it is. `nav2_collision_monitor` reads the LiDAR, so a wrong pose, a lost lane
+or a confused controller cannot talk it out of stopping.
+
+```
+navigator ──/cmd_vel_raw──► collision_monitor ──► /diff_drive_controller/cmd_vel_unstamped
+```
+
+It is started by `greenhouse.launch.py` (`collision_monitor:=false` to bypass
+it). If it is not running, nothing moves — a safety layer you can forget to
+start is not one. `cmd_prior_node` reads its **output**, so when the monitor
+stops the rover the estimator is told zero rather than integrating motion that
+is not happening.
+
+Two zones, sized for the rover (0.60 × 0.64 m) at its driving speed:
+
+| Zone | Clear of the bodywork | Action |
+|---|---|---|
+| `PolygonSlow` | 0.25 m to the side, 0.65 m ahead | 60% speed |
+| `PolygonStop` | 0.10 m to the side, 0.25 m ahead | stop |
+
+Centred in a 1.6 m lane the plants sit 0.23 m outside the slowdown zone, so
+normal driving never triggers either — across a full sweep the monitor logged
+no actions at all.
+
+### 13.1 Who stops and who steers
+
+`side_safety()` in the navigator used to do both: push away from a near side
+**and** stop. Stopping has moved to the monitor (`stop_side_clearance: 0.0`
+switches off the navigator's half); the push stays, because the monitor only
+slows and stops — it does not steer out of trouble. The difference shows up
+directly. Told to drive 0.35 m off the lane centre:
+
+| | Navigator's push | Collision monitor |
+|---|---|---|
+| What it does | drives the lane holding ~21 cm of clearance | **stops at the lane mouth** |
+| Worst clearance reached | 6 cm at one moment | never enters |
+| Mission outcome | completes | aborts, correctly |
+
+The monitor refused to enter a gap that would have left 8 cm beside the
+bodywork. That is the right answer to "squeeze through or stop", and the wrong
+one to "get back to the middle" — hence both.
+
+### 13.2 The slowdown ratio has a floor, and it is a property of the robot
+
+The stock `slowdown_ratio` is 0.3. With it, the first sweep froze: **34 seconds
+stationary, aligned with the lane, nothing near it, until the stall detector
+aborted the leg.**
+
+The monitor scales the **whole twist** — angular as well as linear. This rover
+does not rotate at all below about 0.1 rad/s, because a skid-steer must scrub
+its wheels sideways to turn; `min_pivot_speed` is 0.3 rad/s precisely to stay
+above that. Scaled by 0.3 it becomes 0.09 rad/s. The rover sat commanding a
+pivot it could not physically perform, and because a pivot sets linear velocity
+to zero, it did not drive either.
+
+`slowdown_ratio: 0.6` keeps a slowed pivot at 0.18 rad/s, above breakaway. The
+general rule: **a uniform velocity scaler must not take the minimum pivot
+command below the robot's breakaway rate.**
+
+### 13.3 Speed
+
+`linear_speed` 0.35 → **0.6 m/s** (2.2 km/h). The drive controller allows
+1.0 m/s with 2.0 m/s² of braking, so there is headroom; the old value was
+slower than a real greenhouse robot works at.
+
+| Full sweep | 0.35 m/s, no monitor | 0.6 m/s, with monitor |
+|---|---|---|
+| Duration | 329 s | **265 s** |
+| Deviation from each lane's true centre | 2.2 / 2.8 / 3.3 cm | 3.0 / 3.5 / 2.3 cm |
+| Worst deviation (lane A) | 6.2 cm | 18.6 cm |
+| Closest the body came to the plants | 37–39 cm | 32–39 cm |
+| Parked from the pad centre | 24 cm | **21 cm** |
+| Estimator error at the finish | 5 / 2 cm | 7 / 4 cm |
+
+A 71% speed increase bought a 19% time saving. The rest of the time goes on
+**pivoting**: the controller turns in place before driving, deliberately, and
+that cost does not shrink with speed. If the sweep needs to be faster, that is
+the thing to attack — not the speed limit.
+
+### 13.4 Still open
+
+- **Worst-case deviation roughly tripled** (6 cm to 19 cm in lane A) while the
+  mean held. Faster driving between 10 Hz corrections; worth a look at the
+  control rate before raising speed further.
+- **The monitor only stops.** A rover stopped in a lane needs something to back
+  it out, which is the Nav2 behaviour tree — phase 5, not done.

@@ -17,8 +17,9 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 
 
 def generate_launch_description():
@@ -28,6 +29,15 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('row_correction', default_value='true'),
+        DeclareLaunchArgument(
+            'collision_monitor', default_value='true',
+            description='Route commands through nav2_collision_monitor, which '
+                        'slows and stops on raw LiDAR regardless of what the '
+                        'estimate says'),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(pkg_share, 'launch', 'safety.launch.py')),
+            condition=IfCondition(LaunchConfiguration('collision_monitor'))),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_share, 'launch', 'line_navigation.launch.py')),
@@ -38,5 +48,10 @@ def generate_launch_description():
                               'rviz': LaunchConfiguration('rviz'),
                               'gui': LaunchConfiguration('gui'),
                               'row_correction': LaunchConfiguration('row_correction'),
+                              'cmd_vel_topic': PythonExpression(
+                                  ["'/cmd_vel_raw' if '",
+                                   LaunchConfiguration('collision_monitor'),
+                                   "' == 'true' else "
+                                   "'/diff_drive_controller/cmd_vel_unstamped'"]),
                               }.items()),
     ])
