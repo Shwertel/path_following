@@ -996,3 +996,120 @@ the thing to attack — not the speed limit.
   control rate before raising speed further.
 - **The monitor only stops.** A rover stopped in a lane needs something to back
   it out, which is the Nav2 behaviour tree — phase 5, not done.
+
+---
+
+## 14. Phase 5: Nav2 drives the headlands
+
+Inside a lane the rover steers by the crop rows either side of it and holds the
+centre to about 3 cm — better than any planner working from a map and a pose
+estimate could manage in a 1.6 m lane. **In the headlands there are no rows**,
+our controller falls back to a straight line between two points, and it pivots
+in place before every move. Measured over a sweep: **29.5% of the time
+stationary and turning, 85% of it out there.**
+
+So Nav2 takes the parts that are not inside a lane — the turns between lanes
+and the approach to the bay — and the lanes keep the row controller.
+
+```bash
+ros2 launch egrobots_line_navigation greenhouse_nav2.launch.py
+ros2 run egrobots_line_navigation greenhouse_mission_node --ros-args -p use_sim_time:=true
+```
+
+`greenhouse_nav2.launch.py` starts the simulation, localization and Nav2
+together. Running the three launches separately also works, but bringing nodes
+up in separate waves repeatedly caused discovery failures whose symptoms were
+indirect: costmaps waiting forever for a transform that was being published,
+lifecycle transitions timing out, a mission silently falling back to dead
+reckoning.
+
+| Leg | Driven by |
+|---|---|
+| Down a lane | `FollowLine` + `row_localizer_node` — steers by the plants |
+| Turn between lanes | Nav2: planner, Regulated Pure Pursuit, behaviour tree |
+| Line up, face, dock | Nav2, then the bay sighting |
+
+### 14.1 Three bugs this phase found, all worth knowing
+
+**Pure pursuit does not rotate to a final goal heading.** It follows a path and
+stops when the path runs out. With the stock `yaw_goal_tolerance` of 0.25 rad
+the goal checker therefore never passed: the rover sat **16 cm from its goal,
+inside the position tolerance, hunting back and forth on heading** until the
+progress checker fired and the recovery behaviours pushed it back out to 28 cm.
+On a transit leg the arrival heading is irrelevant, so the tolerance is now
+3.14 — effectively "don't care".
+
+**The controller was subscribed to a topic nobody publishes.** `controller_server`
+defaults to `odom_topic: odom`; robot_localization publishes
+`/odometry/filtered`. The evidence was unambiguous:
+
+```
+/odom                 Publisher count: 0    Subscription count: 1
+/odometry/filtered    Publisher count: 1    Subscription count: 1
+```
+
+Pure pursuit clamps each command relative to the robot's **measured** speed. Never
+seeing one, it believed the robot stationary every cycle and allowed exactly one
+acceleration step: **0.20 rad/s (max_angular_accel 4.0 × the 0.05 s control
+period), constant, for 230 consecutive messages.** It looks like a speed limit
+and is a missing subscription. Fixed, in-place rotation ramps to 0.54 rad/s.
+
+**Angular speed is capped in four places and the lowest wins.** The drive
+controller's `max_velocity: 0.9` overrode everything above it, so raising the
+navigator or pure pursuit alone changed nothing. All four were raised together:
+drive controller to 1.5 rad/s, navigator `angular_speed` to 1.2,
+`min_pivot_speed` to 0.6, `rotate_to_heading_angular_vel` to 1.2.
+
+### 14.2 A fix that was tried and reverted
+
+Raising `min_pivot_speed` to 0.6 rad/s made turns faster but tripled the
+reversals of turn direction (30 → 99): at 0.6 rad/s on a 10 Hz loop the rover
+turns 3.4° per cycle into a 4° acceptance band, so it steps through and comes
+back.
+
+Hysteresis was added — turn until well inside a narrow settle band — and it cut
+reversals to **1**. But the settle band (1.5°) was *below* one control step
+(3.4°), so the rover could not land inside it and ground around every target;
+driving it at 20 Hz with a 3° band fixed the arithmetic but the result was
+visibly sluggish. **Reverted.** The rule it leaves behind is worth keeping:
+`min_pivot_speed × control period` must be comfortably smaller than any band the
+controller is asked to settle inside.
+
+### 14.3 Measured
+
+| | Before Phase 5 | After |
+|---|---|---|
+| Sweep duration | 265 s | **222 s** |
+| Time pivoting in place | 29.5% | **15.3%** |
+| Of that, slower than 0.3 rad/s | 90% | **37%** |
+| Turn reversals | 30 | 35 |
+| Deviation from each lane's true centre | 3.0 / 3.5 / 2.3 cm | 2.6 / 3.1 / 2.6 cm |
+| Closest the body came to the plants | 32–39 cm | 34–38 cm |
+| Parked from the pad centre | 21 cm | 31 cm |
+| Estimator error at the finish | 7 / 4 cm | 4 / 2 cm |
+
+Half the pivoting, most of the crawling gone, 16% quicker, and the lane
+accuracy untouched — which was the condition for doing any of this.
+
+### 14.4 Still open
+
+- **Reversals are unchanged** (30 → 35). The oscillation at the edge of the
+  alignment band is still there; the honest fix is a faster control loop with
+  bands sized to match, not hysteresis bolted onto a 10 Hz loop.
+- **Recovery is present but unproven at sweep level.** `spin` and `backup` were
+  observed firing on a stuck Nav2 goal, but no test yet shows a sweep surviving
+  a jam and carrying on — which was the point of phase 5.
+- **RViz does not start from `greenhouse_nav2.launch.py`** even though the
+  action is declared; run `rviz2 -d $(ros2 pkg prefix nav2_bringup)/share/nav2_bringup/rviz/nav2_default_view.rviz`
+  separately for now.
+- **Lanes still use the old controller.** Phase 4, the lane controller plugin,
+  would put them under the same behaviour tree and recovery as everything else.
+
+### 14.5 Two process traps that cost real time
+
+- **Linux truncates process names to 15 characters.** `pkill -x collision_monitor`
+  and `pkill -x controller_server` never match (`collision_monit`,
+  `controller_serv`). Those two survived every "clean" restart and kept
+  recreating the FastDDS segments that then broke discovery for everything else.
+- **Nodes launched from an install path do not match `pkill -f "ros2 run"`.**
+  Match the package name instead: `pkill -f egrobots_line_navigation`.

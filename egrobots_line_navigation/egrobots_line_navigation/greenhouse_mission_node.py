@@ -52,6 +52,8 @@ from tf2_ros import (Buffer, TransformListener, LookupException,
 
 TF_ERRORS = (LookupException, ExtrapolationException, ConnectivityException)
 
+from nav2_msgs.action import NavigateToPose
+
 from egrobots_line_interfaces.action import FollowLine
 
 NAVIGATOR = '/line_navigator_node'
@@ -118,7 +120,16 @@ class GreenhouseMission(Node):
         self.pose = None
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.create_subscription(PoseStamped, '/robot_pose', self.pose_callback, 10)
+        # Legs that are not inside a lane - the headland turns and the approach
+        # to the bay - go to Nav2: a planned path, followed by pure pursuit,
+        # with the behaviour tree's recovery behind it. Our own controller
+        # pivots in place before every move and spent 29.5% of a sweep doing
+        # exactly that, 85% of it out here. Lane legs stay with FollowLine,
+        # which steers by the crop rows and holds a 1.6 m lane to about 3 cm.
+        self.declare_parameter('use_nav2_between_lanes', True)
+
         self.navigator = ActionClient(self, FollowLine, '/follow_line')
+        self.nav2 = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.set_params = self.create_client(
             SetParameters, f'{NAVIGATOR}/set_parameters')
         self.reset_lane = self.create_client(Trigger, f'{LOCALIZER}/reset_lane')
@@ -311,8 +322,57 @@ class GreenhouseMission(Node):
         if self.call(self.set_params, request) is None:
             self.get_logger().warn('Could not set use_lane_centring')
 
+    def nav2_available(self):
+        return (self.get_parameter('use_nav2_between_lanes').value
+                and self.using_map()
+                and self.nav2.wait_for_server(timeout_sec=2.0))
+
+    def run_nav2_leg(self, leg):
+        """Send one open-ground leg to Nav2 as a NavigateToPose goal.
+
+        The goal is in the plan frame, which is where Nav2 wants it, so no
+        conversion: this is the frame AMCL corrects. Its heading is the
+        direction of travel, which gives pure pursuit something sensible to
+        line up with on the way in.
+        """
+        heading = math.atan2(leg.goal[1] - leg.start[1], leg.goal[0] - leg.start[0])
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = self.get_parameter('plan_frame').value
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position = Point(x=float(leg.goal[0]), y=float(leg.goal[1]), z=0.0)
+        goal.pose.pose.orientation.z = math.sin(heading / 2.0)
+        goal.pose.pose.orientation.w = math.cos(heading / 2.0)
+
+        self.get_logger().info(f'--> {leg}  [nav2]')
+        send = self.nav2.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send)
+        handle = send.result()
+        if handle is None or not handle.accepted:
+            self.get_logger().error(f'{leg.name}: Nav2 rejected the goal')
+            return False, leg.start
+
+        result = handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result)
+        ok = result.result().status == 4          # STATUS_SUCCEEDED
+        here = self.where_am_i() or leg.goal
+        self.get_logger().info(
+            f'    {leg.name}: {"done" if ok else "FAILED"} via Nav2 — '
+            f'at ({here[0]:.2f}, {here[1]:.2f})')
+        return ok, here
+
+    def where_am_i(self):
+        """The rover's position in the plan frame, from TF."""
+        try:
+            tr = self.tf_buffer.lookup_transform(
+                self.get_parameter('plan_frame').value, 'base_link', Time())
+        except TF_ERRORS:
+            return None
+        return (tr.transform.translation.x, tr.transform.translation.y)
+
     def run_leg(self, leg):
-        """Send one leg as a FollowLine goal and wait for it to finish."""
+        """Send one leg, to Nav2 if it is open ground and Nav2 is there."""
+        if not leg.lane and self.nav2_available():
+            return self.run_nav2_leg(leg)
         self.set_lane_centring(leg.lane)
         if leg.lane:
             # Anchor this lane, not the last one.

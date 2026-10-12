@@ -58,6 +58,11 @@ diff_drive_controller:
     angular:
       z:
         has_velocity_limits: true
-        max_velocity: 0.9
+        # This is the ceiling for everything above it - the navigator, pure
+        # pursuit, the lot - so raising any of them without raising this does
+        # nothing. 1.5 rad/s is about 86 deg/s: a brisk spin for a heavy
+        # skid-steer, and far from the crawl that 0.9 allowed once the
+        # controllers tapered their commands near alignment.
+        max_velocity: 1.5
         has_acceleration_limits: true
-        max_acceleration: 3.0
+        max_acceleration: 4.0

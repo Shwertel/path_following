@@ -12,14 +12,20 @@ line_navigator_node:
                                     # slower than a real greenhouse robot works at,
                                     # and the drive controller allows 1.0 m/s with
                                     # 2.0 m/s^2 of braking.
-    angular_speed: 0.8
-    min_pivot_speed: 0.3
+    angular_speed: 1.2              # was 0.8
+    min_pivot_speed: 0.6            # was 0.3. The floor under a pivot command.
+                                    # Its original job was to clear the ~0.1 rad/s
+                                    # breakaway; at 0.3 rad/s (17 deg/s) the last
+                                    # few degrees of every alignment crawled.
 
     cross_track_kp: 1.5
     max_correction_deg: 50.0
     align_tolerance_deg: 4.0
     cross_track_deadband: 0.03
-    heading_kp: 1.5
+    heading_kp: 2.5                 # was 1.5. The pivot rate is kp x heading error,
+                                    # so this is what decides how early the turn
+                                    # starts tapering. At 1.5 it was down to the
+                                    # floor by 11 deg of error.
     on_line_threshold: 0.15
     goal_tolerance: 0.30
     goal_approach_distance: 1.0
