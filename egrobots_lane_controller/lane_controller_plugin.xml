@@ -1,0 +1,9 @@
+<library path="egrobots_lane_controller">
+  <class name="egrobots_lane_controller::LaneController"
+         type="egrobots_lane_controller::LaneController"
+         base_class_type="nav2_core::Controller">
+    <description>
+      Follows a crop lane measured against the rows either side of the rover.
+    </description>
+  </class>
+</library>

@@ -1177,3 +1177,75 @@ pad, estimator error 5 cm sideways and 5 cm along at the finish.
   sight from its mouth, so that is the cheaper of the two.
 - **The rover is left standing in the lane.** Someone clears the obstruction
   and runs the sweep again.
+
+---
+
+## 16. Phase 4: the lane controller as a Nav2 plugin
+
+`egrobots_lane_controller` is a `nav2_core::Controller` loaded by
+`controller_server` alongside Regulated Pure Pursuit. The behaviour tree picks
+between them per leg:
+
+```bash
+ros2 topic pub --once /controller_selector std_msgs/msg/String "{data: FollowLane}"
+```
+
+```
+Controller Server has FollowPath FollowLane  controllers available.
+FollowLane: steering by /lane_centreline, falling back to the plan after 1.0 s without it
+```
+
+**What it does differently from every other Nav2 controller:** it does not
+follow the path. In a 1.6 m lane the path is only as good as the map and the
+pose estimate, while the rows either side are measured afresh every scan. So
+the global plan decides *how far down the lane to go and where to stop*, and
+`/lane_centreline` decides *where across it the rover sits*. When no lane can
+be measured — a gap in a row, a headland — it follows the plan instead, so it
+is always safe to select.
+
+The control law is the one from `line_navigator_node`, in C++: cross-track
+error against the measured lane, capped correction, deadband, and rotate or
+translate but never both, with `min_pivot_speed` as the floor under a pivot.
+
+### 16.1 The bug worth recording
+
+Driving lane A it held 4 cm for the first 5 m, then walked out to **32 cm off
+centre** and the collision monitor froze it against a row.
+
+The cause: **a controller is handed the robot pose in the LOCAL costmap's frame
+(`odom`), but the plan it is given was planned in the GLOBAL costmap's frame
+(`map`).** My fallback compared them directly, so every time the lane
+measurement lapsed for a moment the carrot was displaced by the entire
+`map → odom` correction — which, with AMCL running, is exactly the ~0.3 m the
+rover drifted. The fix is to look up `plan frame → costmap frame` once per
+cycle and transform the plan before using it. Nav2's own controllers all do
+this; it is easy to miss when writing a new one.
+
+### 16.2 Measured, and where it falls short
+
+| Driving lane A | `line_navigator_node` (Python) | `FollowLane` (plugin) |
+|---|---|---|
+| Deviation from the lane's true centre | mean **2.6 cm**, max 5.9 cm | mean **5.3 cm**, max 12.6 cm |
+| Closest the body came to a row | 34 cm | 31 cm |
+| Fell back to the plan | n/a | never, over 20 m |
+
+**It tracks about twice as loosely as the controller it is meant to replace**,
+and misses the ≤5 cm bar set for it. Two differences are the likely cause and
+neither is fundamental:
+
+- The Python controller also carries `side_safety()`, which pushes away from a
+  row that is getting close. The plugin has no equivalent — the collision
+  monitor stops but does not steer.
+- It runs at the controller server's 20 Hz against the navigator's 10 Hz, and
+  20 Hz measurably increased hunting when tried on the Python side.
+
+Until that gap is closed, the plugin is the *architecturally* right answer and
+the Python controller is the *accurate* one. Lane legs still use the Python
+controller; the plugin is loaded and selectable.
+
+### 16.3 What it buys once the gap is closed
+
+Lane legs would run under the same behaviour tree as everything else: the same
+recovery behaviours, the same costmaps, one place where speed limits apply, and
+`line_navigator_node` could retire. Today a blocked lane simply stops the sweep
+because nothing recovers around it.

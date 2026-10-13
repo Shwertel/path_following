@@ -22,7 +22,12 @@ from launch_ros.actions import Node
 def generate_launch_description():
     pkg_share = get_package_share_directory('egrobots_line_navigation')
     params = os.path.join(pkg_share, 'config', 'nav2.yaml')
-    common = [params, {'use_sim_time': True}]
+    # The stock behaviour tree hard-codes which controller to use; ours reads it
+    # from a topic, so lane legs and headland legs can be driven differently.
+    bt_xml = os.path.join(pkg_share, 'behavior_trees',
+                          'navigate_with_controller_choice.xml')
+    common = [params, {'use_sim_time': True,
+                       'default_nav_to_pose_bt_xml': bt_xml}]
 
     servers = ['controller_server', 'planner_server', 'behavior_server', 'bt_navigator']
 

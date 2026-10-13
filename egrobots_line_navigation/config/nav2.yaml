@@ -101,7 +101,9 @@ controller_server:
     failure_tolerance: 0.3
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
-    controller_plugins: ["FollowPath"]
+    # Two controllers, picked per leg by the behaviour tree's ControllerSelector:
+    # FollowPath (pure pursuit) for the headlands, FollowLane for the lanes.
+    controller_plugins: ["FollowPath", "FollowLane"]
 
     # Progress checker parameters
     progress_checker:
@@ -127,6 +129,26 @@ controller_server:
       # heading on arrival is irrelevant; the next leg turns it anyway.
       yaw_goal_tolerance: 3.14
     # DWB parameters
+    # Steers by the crop rows measured either side of the rover instead of by
+    # the planned path. The plan still decides how far down the lane to go and
+    # where to stop; the plants decide where across it the rover sits. Values
+    # mirror config/greenhouse_params.yaml so it behaves like the Python
+    # controller it replaces.
+    FollowLane:
+      plugin: "egrobots_lane_controller::LaneController"
+      desired_linear_vel: 0.6
+      max_angular_vel: 1.2
+      min_pivot_speed: 0.6
+      align_tolerance_deg: 4.0
+      heading_kp: 2.5
+      cross_track_kp: 1.5
+      max_correction_deg: 50.0
+      cross_track_deadband: 0.03
+      lane_offset: 0.0
+      lane_timeout: 1.0
+      lookahead_dist: 0.6
+      lane_topic: "/lane_centreline"
+
     FollowPath:
       # CHANGED from DWB. Pure pursuit chases a lookahead point along the path,
       # turning and driving at the same time, which is the whole reason for

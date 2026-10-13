@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>egrobots_lane_controller</name>
+  <version>0.0.0</version>
+  <description>
+    A Nav2 controller plugin that steers by the crop lane measured either side
+    of the rover, rather than by a planned path. The path says how far down the
+    lane to go; the plants say where the lane is.
+  </description>
+  <maintainer email="shwertel@todo.todo">shwertel</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>pluginlib</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
