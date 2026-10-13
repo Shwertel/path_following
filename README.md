@@ -1113,3 +1113,67 @@ accuracy untouched — which was the condition for doing any of this.
   recreating the FastDDS segments that then broke discovery for everything else.
 - **Nodes launched from an install path do not match `pkill -f "ros2 run"`.**
   Match the package name instead: `pkill -f egrobots_line_navigation`.
+
+---
+
+## 15. What happens when a lane is blocked
+
+Tested by dropping a 1.2 m crate into lane 2 mid-sweep, with `/spawn_entity`:
+
+```bash
+~/row_test_results/phase2/block_lane.sh 12.0 2.05
+```
+
+The rover drives lane 2, meets the crate, and:
+
+```
+lane 2 of 3: FAILED — Aborted: driving, but the view has not changed in 6 s —
+             the rover is held up at (12.23, 1.73)
+PATH BLOCKED in "lane 2 of 3" at (12.23, 1.73). The rover is holding position
+             in the lane; clear the obstruction and run the sweep again.
+```
+
+**It detects, reports where, and holds position.** It does not reverse out.
+That is a deliberate limit, not an omission: the only way out of a blocked lane
+is back the way it came, and there is no sensor looking that way. A rover that
+reverses blindly down a 1.6 m crop lane is a worse problem than one that stops
+and says so.
+
+### 15.1 Two things the test exposed
+
+**The stop zone had to become a circle.** It was a rectangle whose far corner
+sat 0.69 m from the robot's centre. In a 1.6 m lane the plants are 0.72–0.80 m
+away, so the instant the rover tried to turn on the spot that corner swept
+towards the crop and the collision monitor zeroed the command. Cornered by the
+crate it could not drive forward **and could not turn round**: Nav2's `spin`
+recovery timed out, `backup` timed out, every retry timed out, and it stood
+there burning 25-second timeouts.
+
+A circle cannot sweep into anything new when the robot rotates in place.
+`PolygonStop` is now `type: circle, radius: 0.50` — 6 cm beyond the body's
+corners, 0.20 m beyond the nose (braking at 0.6 m/s needs 0.09 m), and 0.22 m
+of margin in the narrowest part of a lane. **Turning in place is the one
+manoeuvre a cornered robot must never be denied.**
+
+**The stall detector only watched forward motion.** Held against the crate the
+rover was commanding a pivot it was not being allowed to execute, so
+`scan_is_frozen` never armed and the leg sat out the full 25 s stall timeout.
+Rotation now counts as motion for that check, and detection dropped from **25 s
+to 6 s**.
+
+### 15.2 Regression
+
+The unblocked sweep is unaffected: three lanes at 2.7 / 3.4 / 3.5 cm from each
+lane's true centre, closest approach to the plants 34 cm, parked 29 cm from the
+pad, estimator error 5 cm sideways and 5 cm along at the finish.
+
+### 15.3 What this is not
+
+- **Not recovery.** Phase 5's acceptance was a sweep that survives a jam and
+  carries on. This detects and reports; it does not carry on, because carrying
+  on from mid-lane requires reversing, which was ruled out above. Driving the
+  remaining lanes after one is blocked needs either a rear sensor or a check
+  that a lane is clear **before** committing to it — the lane is in line of
+  sight from its mouth, so that is the cheaper of the two.
+- **The rover is left standing in the lane.** Someone clears the obstruction
+  and runs the sweep again.

@@ -128,6 +128,13 @@ class GreenhouseMission(Node):
         # which steers by the crop rows and holds a 1.6 m lane to about 3 cm.
         self.declare_parameter('use_nav2_between_lanes', True)
 
+        # What a failed leg means for the sweep is this node's decision. A lane
+        # it cannot drive is reported as blocked and left for someone to clear,
+        # and the sweep carries on with the next one. A greenhouse robot that
+        # abandons the round because one lane has a trolley in it is not much
+        # use; one that reverses blindly out of a lane it is wedged in, with no
+        # sensor looking that way, is worse.
+
         self.navigator = ActionClient(self, FollowLine, '/follow_line')
         self.nav2 = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.set_params = self.create_client(
@@ -445,9 +452,21 @@ class GreenhouseMission(Node):
                     leg.goal = self.to_plan_frame(seen)
             ok, position = self.run_leg(leg)
             if not ok:
-                self.get_logger().error(
-                    f'Sweep stopped during "{leg.name}" at '
-                    f'({position[0]:.2f}, {position[1]:.2f})')
+                if leg.lane:
+                    # Blocked. Report where, and stop: the rover is standing in
+                    # the lane behind whatever stopped it, and the only way out
+                    # is back the way it came. It has no sensor looking that
+                    # way and does not reverse blindly, so the sweep ends here
+                    # and someone clears the lane.
+                    self.get_logger().error(
+                        f'PATH BLOCKED in "{leg.name}" at ({position[0]:.2f}, '
+                        f'{position[1]:.2f}). The rover is holding position in '
+                        f'the lane; clear the obstruction and run the sweep '
+                        f'again.')
+                else:
+                    self.get_logger().error(
+                        f'Sweep stopped during "{leg.name}" at '
+                        f'({position[0]:.2f}, {position[1]:.2f})')
                 return False
 
         self.get_logger().info(

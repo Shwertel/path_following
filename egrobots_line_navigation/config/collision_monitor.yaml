@@ -53,11 +53,23 @@ collision_monitor:
       polygon_pub_topic: "polygon_slowdown"
       enabled: true
 
-    # Stop: 0.10 m beside the bodywork, 0.25 m ahead - just over the braking
-    # distance at 0.6 m/s. Inside this the rover has no business moving.
+    # A CIRCLE, not a rectangle, and the reason matters. A rectangle's far
+    # corner sat 0.69 m from the robot's centre; in a 1.6 m lane the plants are
+    # 0.72-0.80 m away, so the moment the rover tried to turn on the spot that
+    # corner swept towards the crop and this node zeroed the command. Blocked
+    # by a crate in lane 2, the rover could not drive forward and could not
+    # turn round either: Nav2's spin recovery timed out, backup timed out, and
+    # every retry timed out. Turning in place is the one manoeuvre a cornered
+    # robot must never be denied, and a circle cannot sweep into anything new
+    # when the robot rotates.
+    #
+    # 0.50 m: the body's half diagonal is 0.44, so 6 cm beyond its corners,
+    # 0.20 m beyond the nose (braking at 0.6 m/s needs 0.09 m) and 0.18 m
+    # beyond the flanks. Centred in the narrowest part of a lane it still
+    # leaves 0.22 m before it triggers.
     PolygonStop:
-      type: "polygon"
-      points: [0.55, 0.42, 0.55, -0.42, -0.40, -0.42, -0.40, 0.42]
+      type: "circle"
+      radius: 0.50
       action_type: "stop"
       max_points: 3
       visualize: true

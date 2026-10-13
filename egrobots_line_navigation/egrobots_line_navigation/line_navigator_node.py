@@ -776,7 +776,12 @@ class LineNavigator(Node):
                         cmd.linear.x *= max(0.2, distance / approach)
                     self.cmd_publisher.publish(cmd)
 
-                if self.scan_is_frozen(msg, cmd.linear.x > 0.05):
+                # Rotation counts as motion here, not just driving. Held
+                # against a crate, the rover was commanding a pivot it was not
+                # being allowed to execute, so this never armed and the leg sat
+                # out the full 25 s stall timeout instead of failing in 6.
+                if self.scan_is_frozen(
+                        msg, cmd.linear.x > 0.05 or abs(cmd.angular.z) > 0.05):
                     self.stop()
                     goal_handle.abort()
                     result.success = False
