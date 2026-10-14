@@ -83,6 +83,8 @@ private:
   double max_angular_vel_{1.2};
   double min_pivot_speed_{0.6};
   double align_tolerance_{0.0698};     // 4 degrees
+  double rotate_in_place_{0.785};      // 45 degrees: beyond this, turn on the spot
+  double min_speed_fraction_{0.4};     // floor under the cornering speed taper
   double heading_kp_{2.5};
   double cross_track_kp_{1.5};
   double max_correction_{0.873};       // 50 degrees

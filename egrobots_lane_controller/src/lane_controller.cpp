@@ -43,6 +43,8 @@ void LaneController::configure(
   declare_parameter_if_not_declared(node, p("cross_track_kp"), rclcpp::ParameterValue(1.5));
   declare_parameter_if_not_declared(node, p("max_correction_deg"), rclcpp::ParameterValue(50.0));
   declare_parameter_if_not_declared(node, p("cross_track_deadband"), rclcpp::ParameterValue(0.03));
+  declare_parameter_if_not_declared(node, p("rotate_in_place_deg"), rclcpp::ParameterValue(45.0));
+  declare_parameter_if_not_declared(node, p("min_speed_fraction"), rclcpp::ParameterValue(0.4));
   declare_parameter_if_not_declared(node, p("lane_offset"), rclcpp::ParameterValue(0.0));
   declare_parameter_if_not_declared(node, p("lane_timeout"), rclcpp::ParameterValue(1.0));
   declare_parameter_if_not_declared(node, p("lookahead_dist"), rclcpp::ParameterValue(0.6));
@@ -58,6 +60,10 @@ void LaneController::configure(
   node->get_parameter(p("cross_track_kp"), cross_track_kp_);
   node->get_parameter(p("max_correction_deg"), correction_deg);
   node->get_parameter(p("cross_track_deadband"), cross_track_deadband_);
+  double rotate_deg;
+  node->get_parameter(p("rotate_in_place_deg"), rotate_deg);
+  node->get_parameter(p("min_speed_fraction"), min_speed_fraction_);
+  rotate_in_place_ = rotate_deg * M_PI / 180.0;
   node->get_parameter(p("lane_offset"), lane_offset_);
   node->get_parameter(p("lane_timeout"), lane_timeout_);
   node->get_parameter(p("lookahead_dist"), lookahead_);
@@ -101,9 +107,20 @@ bool LaneController::measuredLane(double & x, double & y, double & yaw)
   if (!have_lane_) {
     return false;
   }
+  // A small NEGATIVE age is normal and must not be treated as invalid. The
+  // measurement carries the scan's timestamp, and under simulated time this
+  // node's /clock can lag the scan by a few tens of milliseconds - measured,
+  // -0.047 s, well inside one 10 Hz scan period. Rejecting those threw away
+  // every other good measurement and left the controller following the planned
+  // path for about half of every lane leg, which is exactly what it exists not
+  // to do. Only a large negative age means something is actually wrong, such
+  // as the clock jumping or the wrong clock source.
   const double age =
     (clock_->now() - rclcpp::Time(lane_.header.stamp, clock_->get_clock_type())).seconds();
-  if (age < 0.0 || age > lane_timeout_) {
+  if (age > lane_timeout_ || age < -lane_timeout_) {
+    RCLCPP_WARN_THROTTLE(logger_, *clock_, 5000,
+                         "%s: no usable lane measurement, age %.3f s (limit %.1f)",
+                         plugin_name_.c_str(), age, lane_timeout_);
     return false;
   }
 
@@ -207,19 +224,36 @@ geometry_msgs::msg::TwistStamped LaneController::computeVelocityCommands(
     return cmd;   // nothing to steer by and nowhere to go
   }
 
-  // Rotate or translate, never both. Driving while the heading is still
-  // changing integrates distance along a heading that is already out of date,
-  // and on this rover that costs roughly 70x more position error per metre.
   const double error = wrap(desired_heading - rover_yaw);
-  if (std::abs(error) > align_tolerance_) {
+
+  // Turn while driving, on an arc, and only stop to turn when the correction
+  // is too sharp to drive through.
+  //
+  // The old rule was rotate OR translate, never both - inherited from a brief
+  // where nothing corrected position, so every metre driven while the heading
+  // was still changing was integrated along a stale heading and cost roughly
+  // 70x more error per metre. AMCL corrects position now, so that reasoning no
+  // longer holds, and the cost of the old rule is visible: the rover spent
+  // 14.2% of a sweep stopped and turning, with 49 reversals of turn direction,
+  // against pure pursuit's 0% and 0.
+  //
+  // min_pivot_speed is deliberately NOT applied here. Its job is to clear the
+  // ~0.1 rad/s at which this skid-steer breaks away from rest; once the wheels
+  // are rolling, an arbitrarily small angular command executes fine. Applying
+  // that floor to a rolling correction is what made the steering twitch.
+  if (std::abs(error) > rotate_in_place_) {
     const double floor_rate = std::min(min_pivot_speed_, max_angular_vel_);
     const double rate = std::min(
       max_angular_vel_, std::max(floor_rate, heading_kp_ * std::abs(error)));
     cmd.twist.angular.z = std::copysign(rate, error);
     cmd.twist.linear.x = 0.0;
   } else {
-    cmd.twist.angular.z = 0.0;
-    cmd.twist.linear.x = desired_linear_vel_ * speed_limit_;
+    cmd.twist.angular.z = std::clamp(
+      heading_kp_ * error, -max_angular_vel_, max_angular_vel_);
+    // Ease off through a correction: full speed when aligned, tapering with the
+    // cosine of the heading error so a sharp turn is not taken at full tilt.
+    const double taper = std::max(min_speed_fraction_, std::cos(error));
+    cmd.twist.linear.x = desired_linear_vel_ * speed_limit_ * taper;
   }
   return cmd;
 }

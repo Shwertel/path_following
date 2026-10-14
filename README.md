@@ -1326,3 +1326,64 @@ for a reason worth knowing: **both launch files declare an argument called
 `rviz`**, and the `false` passed to the inner one leaked into the parent scope,
 overwriting ours, so the RViz action was skipped silently. Wrapping the include
 in a `GroupAction` scopes it. `rviz:=false` still turns it off.
+
+---
+
+## 18. Two fixes that made the lane controller the best of the three
+
+| Driving the lanes | Deviation A / B / C | Closest to a row | Stop-and-pivot | Reversals | Speed |
+|---|---|---|---|---|---|
+| `FollowLine` (Python) | 2.6 / 3.1 / 2.6 cm | 34–39 cm | 3.2% | 16 | 0.53 m/s |
+| `FollowPath` (pure pursuit) | 5.7 / 5.6 / 16.3 cm | 18 cm | 0.0% | 0 | 0.56 m/s |
+| `FollowLane` before | 2.2 / 6.3 / 3.5 cm | 29–36 cm | 14.2% | 49 | 0.47 m/s |
+| **`FollowLane` after** | **2.4 / 3.0 / 2.6 cm** | **37–39 cm** | **0.0%** | **0** | **0.60 m/s** |
+
+Lane C is 2.6 cm instead of pure pursuit's 16.3 because the controller does not
+care that the map is wrong there — it asks the plants.
+
+### 18.1 A fresh measurement can have a negative age
+
+The controller was following the planned path for about half of every lane leg.
+The measurement arrives at 10 Hz without a gap, so the fault was the staleness
+check, and the diagnostic said so plainly:
+
+```
+FollowLane: rejecting lane measurement, age -0.047 s (limit 1.0)
+```
+
+**The age was negative.** `/lane_centreline` carries the *scan's* timestamp, and
+under simulated time the controller server's `/clock` lags the scan by a few
+tens of milliseconds — well inside one 10 Hz scan period. A guard of
+`age < 0.0 || age > timeout` threw those away, which is every other good
+measurement. Only a *large* negative age means something is wrong (a clock jump,
+or the wrong clock source), so the test is now
+`age > timeout || age < -timeout`.
+
+### 18.2 The pivot floor belongs to standing starts, not to steering
+
+The controller inherited **rotate or translate, never both** from
+`line_navigator_node`. That rule was written for the straight-line brief, where
+nothing corrected position and every metre driven while the heading was still
+changing cost roughly 70x more error per metre. **AMCL corrects position now, so
+the reason has expired**, and the cost was visible: 14.2% of a sweep stopped and
+turning, 49 reversals.
+
+It now turns while driving, and only stops to turn when the correction exceeds
+`rotate_in_place_deg` (45°) — too sharp to drive through in a 1.6 m lane. Speed
+tapers with the cosine of the heading error so a correction is not taken at full
+tilt.
+
+The subtle part is `min_pivot_speed`. Its job is to clear the ~0.1 rad/s at
+which this skid-steer breaks away **from rest**; once the wheels are rolling, an
+arbitrarily small angular command executes fine. Applying that floor to a
+rolling correction is what made the steering twitch, so it is now applied only
+in the turn-on-the-spot branch. **A breakaway floor is a property of standing
+starts, not of steering.**
+
+### 18.3 Where this leaves the controllers
+
+`FollowLane` is now the one to drive lanes with: as accurate as the Python
+controller, as smooth as pure pursuit, faster than both, and keeping the most
+clearance. `line_navigator_node` remains as the fallback when Nav2 is not
+running, and pure pursuit still drives the headlands, where there are no rows to
+measure.
