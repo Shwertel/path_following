@@ -1249,3 +1249,80 @@ Lane legs would run under the same behaviour tree as everything else: the same
 recovery behaviours, the same costmaps, one place where speed limits apply, and
 `line_navigator_node` could retire. Today a blocked lane simply stops the sweep
 because nothing recovers around it.
+
+---
+
+## 17. Which controller should drive a lane
+
+Three controllers can drive a lane leg. Measured over a full sweep, scored
+against each lane's true centre:
+
+| Driving the lanes | Deviation A / B / C | Closest to a row | Stop-and-pivot | Reversals | Speed |
+|---|---|---|---|---|---|
+| `FollowLine` (Python) | 2.6 / 3.1 / 2.6 cm | **34–39 cm** | 3.2% | 16 | 0.53 m/s |
+| `FollowPath` (pure pursuit) | 5.7 / 5.6 / **16.3** cm | **18 cm** | **0.0%** | **0** | **0.56 m/s** |
+| `FollowLane` (our plugin) | 2.2 / 6.3 / 3.5 cm | 29–36 cm | 14.2% | 49 | 0.47 m/s |
+
+Set with `-p lane_controller:=FollowPath` on `greenhouse_mission_node`.
+
+**Pure pursuit is in a different class for smoothness** — it never once stopped
+to pivot across three lanes, and it is the fastest. It is also the least safe
+here: it came within **18 cm** of the plants against 34–39 cm.
+
+### 17.1 Why pure pursuit wanders in lane C, and why AMCL is not to blame
+
+| Lane | AMCL's own error | Rover off the TRUE centre | Where AMCL believed it was |
+|---|---|---|---|
+| A | 4.7 cm | +5.6 cm | +1.4 cm |
+| B | 8.4 cm | +3.6 cm | −4.2 cm |
+| **C** | **4.6 cm** | **+15.6 cm** | **+11.2 cm** |
+
+AMCL localizes lane C as well as the others — 4.6 cm. It *believed* it was
+11 cm off centre, and it was right. **The rover went exactly where the path
+told it to; the path was wrong.** The planner plans down the free corridor in
+the map, so the map's lane C is offset about 11 cm from the real one —
+accumulated SLAM drift, lane C having been mapped last.
+
+That is not a localization bug to fix. It is the premise of the whole project
+restated: **a planned path is only as good as the map, and a map of a crop
+drifts when you build it and ages after you build it. The rows do not.** A
+better map would reduce this; it would not remove it, and it would decay again
+as the crop grows.
+
+### 17.2 Why the plugin is currently the worst of both
+
+`FollowLane` should combine pure pursuit's smooth execution with lane-relative
+accuracy, and does neither yet. Its own logs say why: across the sweep it
+logged **34 lane-steering intervals against 35 fall-back-to-the-plan
+intervals** — roughly half of every lane leg it had no fresh lane measurement
+and was following the planned path anyway, so it inherited the map error *and*
+added its own stop-and-pivot. Either the 1.0 s staleness window is wrong for
+how often `row_localizer_node` publishes, or the timestamp comparison is
+rejecting good measurements. That is the next thing to fix.
+
+### 17.3 A measurement that was wrong, and how it was caught
+
+An earlier run appeared to show the plugin driving lane A beautifully — 5.3 cm,
+zero pivots, zero reversals. It was not the plugin. `ControllerSelector`
+subscribes to `/controller_selector` with **TRANSIENT_LOCAL + RELIABLE**
+durability, and `ros2 topic pub` publishes **VOLATILE** by default. The QoS did
+not match, the message was dropped without a word, and the default controller
+(`FollowPath`) drove the whole run. The plugin's own control loop logs on every
+cycle; those lines were absent, which is what exposed it.
+
+To select a controller from the command line, the durability must match:
+
+```bash
+ros2 topic pub --once --qos-durability transient_local /controller_selector \
+  std_msgs/msg/String "{data: FollowLane}"
+```
+
+`greenhouse_mission_node` now publishes it with the right QoS itself, per leg.
+
+### 17.4 RViz starts with the stack again
+
+`greenhouse_nav2.launch.py` now opens RViz by default. It had stopped doing so
+for a reason worth knowing: **both launch files declare an argument called
+`rviz`**, and the `false` passed to the inner one leaked into the parent scope,
+overwriting ours, so the RViz action was skipped silently. Wrapping the include
+in a `GroupAction` scopes it. `rviz:=false` still turns it off.

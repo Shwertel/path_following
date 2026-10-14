@@ -45,7 +45,9 @@ from rclpy.parameter import Parameter
 from geometry_msgs.msg import Point, PoseStamped
 from rcl_interfaces.srv import SetParameters
 from rclpy.time import Time
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import (Buffer, TransformListener, LookupException,
                      ExtrapolationException, ConnectivityException)
@@ -128,12 +130,27 @@ class GreenhouseMission(Node):
         # which steers by the crop rows and holds a 1.6 m lane to about 3 cm.
         self.declare_parameter('use_nav2_between_lanes', True)
 
+        # Which Nav2 controller drives which kind of leg. The behaviour tree
+        # reads this from /controller_selector, and its subscription is
+        # TRANSIENT_LOCAL + RELIABLE - a default publisher is VOLATILE, so the
+        # QoS does not match and the message is dropped without a word. That is
+        # why an earlier test appeared to run the lane controller and was in
+        # fact running pure pursuit the whole time.
+        self.declare_parameter('lane_controller', 'FollowLane')
+        self.declare_parameter('open_controller', 'FollowPath')
+
         # What a failed leg means for the sweep is this node's decision. A lane
         # it cannot drive is reported as blocked and left for someone to clear,
         # and the sweep carries on with the next one. A greenhouse robot that
         # abandons the round because one lane has a trolley in it is not much
         # use; one that reverses blindly out of a lane it is wedged in, with no
         # sensor looking that way, is worse.
+
+        selector_qos = QoSProfile(
+            depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE)
+        self.controller_pub = self.create_publisher(
+            String, '/controller_selector', selector_qos)
 
         self.navigator = ActionClient(self, FollowLine, '/follow_line')
         self.nav2 = ActionClient(self, NavigateToPose, '/navigate_to_pose')
@@ -350,7 +367,9 @@ class GreenhouseMission(Node):
         goal.pose.pose.orientation.z = math.sin(heading / 2.0)
         goal.pose.pose.orientation.w = math.cos(heading / 2.0)
 
-        self.get_logger().info(f'--> {leg}  [nav2]')
+        self.get_logger().info(
+            f'--> {leg}  [nav2: '
+            f'{self.get_parameter("lane_controller").value if leg.lane else self.get_parameter("open_controller").value}]')
         send = self.nav2.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, send)
         handle = send.result()
@@ -376,10 +395,34 @@ class GreenhouseMission(Node):
             return None
         return (tr.transform.translation.x, tr.transform.translation.y)
 
+    def select_controller(self, name):
+        """Tell the behaviour tree which controller to drive the next leg with."""
+        msg = String()
+        msg.data = name
+        self.controller_pub.publish(msg)
+        for _ in range(4):           # let it reach the behaviour tree
+            rclpy.spin_once(self, timeout_sec=0.1)
+
     def run_leg(self, leg):
-        """Send one leg, to Nav2 if it is open ground and Nav2 is there."""
-        if not leg.lane and self.nav2_available():
+        """Send one leg to Nav2 if it is available, otherwise to FollowLine.
+
+        Both kinds of leg go through Nav2 now; only the controller differs. A
+        lane leg is driven by the lane controller, which steers by the rows
+        measured either side of the rover; open ground is driven by pure
+        pursuit. Either way the behaviour tree, the costmaps and the recovery
+        behaviours are the same.
+        """
+        if self.nav2_available():
+            if leg.lane:
+                # Anchor this lane, not the last one, before driving it.
+                if self.call(self.reset_lane, Trigger.Request()) is None:
+                    self.get_logger().warn('Lane reset failed; continuing')
+                self.select_controller(self.get_parameter('lane_controller').value)
+            else:
+                self.select_controller(self.get_parameter('open_controller').value)
             return self.run_nav2_leg(leg)
+
+        # No Nav2: fall back to the Python controller for everything.
         self.set_lane_centring(leg.lane)
         if leg.lane:
             # Anchor this lane, not the last one.

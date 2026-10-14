@@ -13,7 +13,8 @@ lifecycle transitions timing out).
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import (DeclareLaunchArgument, GroupAction,
+                            IncludeLaunchDescription, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -32,9 +33,14 @@ def generate_launch_description():
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('rviz', default_value='true'),
         # The inner launch's own RViz config predates Nav2; this one shows the
-        # map, the costmaps, the planned path and AMCL's particle cloud.
-        include('greenhouse.launch.py',
-                gui=LaunchConfiguration('gui'), rviz='false'),
+        # map, the costmaps, the planned path and AMCL's particle cloud. The
+        # GroupAction is load-bearing: both launch files declare an argument
+        # called "rviz", and without a scope the 'false' passed to the inner one
+        # overwrites ours in the parent, so our RViz silently never starts.
+        GroupAction([
+            include('greenhouse.launch.py',
+                    gui=LaunchConfiguration('gui'), rviz='false'),
+        ]),
         TimerAction(period=35.0, actions=[Node(
             package='rviz2', executable='rviz2', name='rviz2', output='screen',
             arguments=['-d', os.path.join(
