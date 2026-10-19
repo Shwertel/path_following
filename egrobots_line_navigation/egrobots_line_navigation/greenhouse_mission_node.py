@@ -119,6 +119,7 @@ class GreenhouseMission(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.scan = None
+        self.nav2_seen = False
         self.pose = None
         self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
         self.create_subscription(PoseStamped, '/robot_pose', self.pose_callback, 10)
@@ -347,9 +348,28 @@ class GreenhouseMission(Node):
             self.get_logger().warn('Could not set use_lane_centring')
 
     def nav2_available(self):
-        return (self.get_parameter('use_nav2_between_lanes').value
-                and self.using_map()
-                and self.nav2.wait_for_server(timeout_sec=2.0))
+        """Whether to drive this leg with Nav2 rather than the Python fallback.
+
+        The first call carries a long timeout, the rest a short one. bt_navigator
+        can take tens of seconds to be discoverable after the lifecycle manager
+        reports its nodes active, and a 2 s check on the first leg silently
+        dropped a whole sweep onto the fallback controller - which works, but is
+        not what was being tested, and the only hint was a missing "[nav2 ...]"
+        in one log line. Once it has answered once, 2 s is plenty.
+        """
+        if not (self.get_parameter('use_nav2_between_lanes').value and self.using_map()):
+            return False
+        timeout = 2.0 if self.nav2_seen else 30.0
+        if self.nav2.wait_for_server(timeout_sec=timeout):
+            if not self.nav2_seen:
+                self.get_logger().info('Nav2 is up; legs will be driven through it')
+                self.nav2_seen = True
+            return True
+        if not self.nav2_seen:
+            self.get_logger().warn(
+                f'Nav2 did not answer within {timeout:.0f} s. Falling back to the '
+                f'Python FollowLine controller for the whole sweep.')
+        return False
 
     def run_nav2_leg(self, leg):
         """Send one open-ground leg to Nav2 as a NavigateToPose goal.

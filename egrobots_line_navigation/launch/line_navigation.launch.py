@@ -22,6 +22,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_share, 'launch', 'simulation.launch.py')),
         launch_arguments={'rviz': LaunchConfiguration('rviz'),
+                          'sensor_suite': LaunchConfiguration('sensor_suite'),
                           'gui': LaunchConfiguration('gui'),
                           'world': LaunchConfiguration('world'),
                           'row_correction': LaunchConfiguration('row_correction'),
@@ -41,6 +42,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('sensor_suite', default_value='depth'),
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('world', default_value='egrobots_world.world'),
         DeclareLaunchArgument('row_correction', default_value='true'),

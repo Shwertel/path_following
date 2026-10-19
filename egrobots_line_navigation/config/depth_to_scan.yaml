@@ -1,0 +1,35 @@
+# Depth camera to LaserScan conversion.
+#
+# Heights are in base_link, which rides 0.25 m above the ground. So the floor
+# is at z = -0.25 and every height below is measured from there.
+depth_to_scan_node:
+  ros__parameters:
+    scan_frame: camera_scan_frame
+    base_frame: base_link
+
+    # -0.15 is 10 cm above the floor. Anything standing proud of the ground by
+    # more than that becomes an obstacle, which is the entire reason for
+    # tilting the camera down - a planar scanner at 0.77 m sees none of it.
+    #
+    # Lower this and the floor starts leaking through as phantom obstacles,
+    # because depth noise and the odd bump put ground points above the line.
+    min_z: -0.15
+    # 1.25 is 1.5 m above the ground. Plants top out between 1.2 and 1.6 m, so
+    # this keeps their bodies and ignores whatever arches overhead.
+    max_z: 1.25
+
+    range_min: 0.3
+    range_max: 6.0
+
+    # One bin per half degree. The camera spans 87 degrees, so 175 bins -
+    # against the LiDAR's 360 over a full circle, which was one per degree.
+    # Narrower field, finer sampling.
+    angle_increment_deg: 0.5
+
+    # 424x240 striding 2x2 leaves about 25k points per frame. A plant is
+    # hundreds of pixels wide; nothing is lost by not looking at all of them.
+    row_stride: 2
+    col_stride: 2
+
+    # /camera/obstacle_points, the kept points, for looking at in rviz.
+    publish_cloud: true

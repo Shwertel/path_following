@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- FastDDS with the shared-memory transport turned off, UDP only.
+
+     Nav2's lifecycle_manager would wedge forever part way through bringup -
+     typically right after "Configuring map_server" - with no timeout and no
+     error. The managed node itself was fine and reported "inactive" to a
+     service call from another process, so the transition had succeeded; it was
+     the manager's own service client that never saw the reply. That is the
+     known FastDDS shared-memory deadlock, and it got more likely the more
+     times the stack had been torn down and relaunched.
+
+     Dropping to UDP over loopback costs a little throughput on the depth
+     image, which is why the socket buffers below are enlarged. The kernel caps
+     them at net.core.rmem_max, so if images start dropping, raise that. -->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_only</transport_id>
+        <type>UDPv4</type>
+        <sendBufferSize>8388608</sendBufferSize>
+        <receiveBufferSize>8388608</receiveBufferSize>
+        <maxMessageSize>65000</maxMessageSize>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="udp_only_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_only</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

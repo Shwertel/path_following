@@ -147,6 +147,36 @@ class RowLocalizerNode(Node):
         self.declare_parameter('along_std', 50.0)
         self.declare_parameter('single_row_inflation', 2.0)
 
+        # Whether a single-row fit is allowed to set the HEADING, or only the
+        # sideways offset.
+        #
+        # With a 360 degree scanner a lone row is a long line running past the
+        # rover, and its direction is well conditioned. With an 87 degree
+        # camera it is a short segment 1 to 5 m ahead, and its direction is
+        # not. Worse, the two feed back: a few degrees of heading error swings
+        # the cone far enough to push the other row out of view entirely, which
+        # forces a single-row fit, which produces a worse heading. Lane 1 of a
+        # sweep on 2026-10-19 went from a clean 1.3 deg to 34 deg in five
+        # seconds that way, and drove into the row.
+        #
+        # When this is off the heading comes from the prediction instead, which
+        # is anchored by the IMU and cannot run away.
+        self.declare_parameter('single_row_sets_heading', True)
+
+        # Whether a single-row fit is trusted AT ALL.
+        #
+        # Stronger than the parameter above, and for an 87 degree camera the
+        # honest setting. One row seen through a narrow cone does not tell you
+        # WHICH row it is. On 2026-10-19 a single-row fit reported the rover
+        # 1.46 m from the centre of a 1.57 m lane - it had locked onto the row
+        # one lane over. That is not a noisy measurement, it is a confident
+        # wrong one, and it went straight into the EKF.
+        #
+        # With both rows required, a scan that sees only one publishes nothing
+        # and the controller falls back to following the Nav2 plan, which is
+        # map-based and already handles the case.
+        self.declare_parameter('require_both_rows', False)
+
         self.rng = np.random.default_rng(0)
         self.anchor_samples = []
         self.road = None            # (cx, cy, phi, width)
@@ -330,15 +360,30 @@ class RowLocalizerNode(Node):
             gain = self.get_parameter('width_tracking_gain').value
             width += gain * ((left[1] - right[1]) - width)
             self.road = (cx, cy, phi, width)
-        elif left:
-            e, beta, rows = width / 2 - left[1], left[0], 'left'
-            inflation = self.get_parameter('single_row_inflation').value
-        elif right:
-            e, beta, rows = -width / 2 - right[1], right[0], 'right'
+        elif (left or right) and not self.get_parameter('require_both_rows').value:
+            single = left if left else right
+            sign = 1.0 if left else -1.0
+            e = sign * width / 2 - single[1]
+            # One row fixes how far sideways the rover is. Whether it also
+            # fixes which way the rover points depends on the sensor; see the
+            # parameter.
+            beta = (single[0] if self.get_parameter('single_row_sets_heading').value
+                    else beta_pred)
+            rows = 'left' if left else 'right'
             inflation = self.get_parameter('single_row_inflation').value
         else:
             self.scans_skipped += 1
             return
+        # A rover whose centre is further from the lane centre than half the
+        # lane width is standing inside the plants. It is not; the measurement
+        # is wrong. Reject it rather than steer by it.
+        if abs(e) > width / 2.0:
+            self.get_logger().warn(
+                f'rejecting impossible offset {e:+.3f} m in a {width:.2f} m lane '
+                f'(rows={rows})', throttle_duration_sec=2.0)
+            self.scans_skipped += 1
+            return
+
         self.scans_used += 1
 
         # Along the road: whatever the EKF believes. Across it: what the cars say.

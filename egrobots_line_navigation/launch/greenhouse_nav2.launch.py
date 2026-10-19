@@ -32,6 +32,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('sensor_suite', default_value='depth'),
         # The inner launch's own RViz config predates Nav2; this one shows the
         # map, the costmaps, the planned path and AMCL's particle cloud. The
         # GroupAction is load-bearing: both launch files declare an argument
@@ -39,13 +40,16 @@ def generate_launch_description():
         # overwrites ours in the parent, so our RViz silently never starts.
         GroupAction([
             include('greenhouse.launch.py',
-                    gui=LaunchConfiguration('gui'), rviz='false'),
+                    gui=LaunchConfiguration('gui'), rviz='false',
+                    sensor_suite=LaunchConfiguration('sensor_suite')),
         ]),
         TimerAction(period=35.0, actions=[Node(
             package='rviz2', executable='rviz2', name='rviz2', output='screen',
-            arguments=['-d', os.path.join(
-                get_package_share_directory('nav2_bringup'),
-                'rviz', 'nav2_default_view.rviz')],
+            # Our own view, not nav2's stock one. Same map, costmaps, path
+            # and particle cloud, plus the camera image, the points that
+            # survived the height filter, and the scan synthesised from them,
+            # so the whole depth pipeline is visible at once.
+            arguments=['-d', os.path.join(pkg_share, 'rviz', 'greenhouse_depth.rviz')],
             parameters=[{'use_sim_time': True}],
             condition=IfCondition(LaunchConfiguration('rviz')))]),
         # Gazebo needs a moment to have a robot, a clock and a scan before the

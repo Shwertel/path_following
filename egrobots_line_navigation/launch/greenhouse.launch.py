@@ -27,6 +27,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('sensor_suite', default_value='depth'),
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('row_correction', default_value='true'),
         DeclareLaunchArgument(
@@ -42,6 +43,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_share, 'launch', 'line_navigation.launch.py')),
             launch_arguments={'world': 'greenhouse_world.world',
+                              'sensor_suite': LaunchConfiguration('sensor_suite'),
                               'nav_params': 'greenhouse_params.yaml',
                               'row_params': 'row_greenhouse.yaml',
                               'ekf_params': 'ekf_greenhouse.yaml',

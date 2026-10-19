@@ -1,5 +1,39 @@
 <?xml version="1.0"?>
-<robot name="egrobots_rover">
+<!-- WARNING about punctuation in this file. Two separate traps live here.
+
+     ONE. An XML comment may not contain a double hyphen. Not anywhere, not
+     even in prose. The parser rejects the whole document and xacro reports
+     only "not well-formed (invalid token)" with a line and column.
+
+     TWO. gazebo_ros2_control hands the whole expanded URDF to the controller
+     manager as a command line parameter override, and rcl parses that value
+     as YAML. A colon followed by a space, or a colon at the end of a line,
+     reads as a YAML mapping key and the parse fails. The controller manager
+     then never starts and both spawners hang forever waiting on
+     /controller_manager/list_controllers. It is reported as "parser error
+     Couldn't parse parameter override rule", and the message is truncated
+     long before the offending text, so it points nowhere near the real line.
+
+     Comments count for both. To check, neither of these may print anything.
+         grep -nE ':(\s|$)' egrobots_rover.urdf.xacro
+         grep -nP '(?<!<!)[-][-](?!>)' egrobots_rover.urdf.xacro
+-->
+<robot name="egrobots_rover" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Which sensor the rover carries. "depth" is the front RGB-D (default),
+       "lidar" (the original 360 deg planar scanner) or "both", which is only
+       useful for comparing the two against each other. -->
+  <xacro:arg name="sensor_suite" default="depth"/>
+  <xacro:property name="suite" value="$(arg sensor_suite)"/>
+  <xacro:property name="use_lidar" value="${suite == 'lidar' or suite == 'both'}"/>
+  <xacro:property name="use_depth" value="${suite == 'depth' or suite == 'both'}"/>
+
+  <!-- Camera placement, in one place so the converter node and the URDF
+       cannot disagree. base_link rides 0.25 m above the ground, so a camera
+       at base_link z = 0.45 is 0.70 m up. -->
+  <xacro:property name="cam_x" value="0.30"/>
+  <xacro:property name="cam_z" value="0.45"/>
+  <xacro:property name="cam_pitch" value="0.31416"/>   <!-- 18 deg nose-down -->
   <material name="dark_grey">
     <color rgba="0.2 0.2 0.2 1"/>
   </material>
@@ -172,7 +206,7 @@
     <child link="mast"/>
     <origin xyz="0 0 0.475" rpy="0 0 0"/>
   </joint>
-/  <link name="sensor_mount">
+  <link name="sensor_mount">
     <visual>
       <geometry>
         <box size="0.1 0.1 0.08"/>
@@ -212,6 +246,78 @@
     <parent link="base_link"/>
     <child link="imu_link"/>
     <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================  FRONT RGB-D DEPTH CAMERA  ==================
+       A short arm carries the camera forward off the mast to the front of
+       the rover, where it looks down the lane and slightly down at the floor.
+
+       Four frames, and the difference between them matters.
+         camera_arm           - the bracket, just something to see in rviz
+         camera_link          - the camera body. x forward, y left, z up,
+                                PITCHED 18 deg nose-down.
+         camera_link_optical  - the same point in optical convention
+                                (z forward, x right, y down). The depth image
+                                and its camera_info are stamped with this.
+         camera_scan_frame    - the camera's position but LEVEL. The scan the
+                                converter synthesises is a horizontal slice,
+                                so it must not inherit the camera's pitch or
+                                amcl would read every beam as tilted. -->
+  <link name="camera_arm">
+    <visual>
+      <geometry>
+        <box size="0.30 0.04 0.04"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="dark_grey"/>
+    </visual>
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-4" ixy="0.0" ixz="0.0" iyy="1e-3" iyz="0.0" izz="1e-3"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_arm_joint" type="fixed">
+    <parent link="mast"/>
+    <child link="camera_arm"/>
+    <!-- mast origin is base_link z=0.475, so -0.025 puts the arm at z=0.45 -->
+    <origin xyz="0.15 0 -0.025" rpy="0 0 0"/>
+  </joint>
+
+  <link name="camera_link">
+    <visual>
+      <geometry>
+        <box size="0.025 0.09 0.025"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="black"/>
+    </visual>
+    <inertial>
+      <mass value="0.07"/>
+      <inertia ixx="1e-5" ixy="0.0" ixz="0.0" iyy="1e-5" iyz="0.0" izz="1e-5"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="camera_arm"/>
+    <child link="camera_link"/>
+    <origin xyz="0.15 0 0" rpy="0 ${cam_pitch} 0"/>
+  </joint>
+
+  <link name="camera_link_optical"/>
+
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_link_optical"/>
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <link name="camera_scan_frame"/>
+
+  <joint name="camera_scan_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_scan_frame"/>
+    <origin xyz="${cam_x} 0 ${cam_z}" rpy="0 0 0"/>
   </joint>
   <gazebo reference="base_link">
     <material>Gazebo/DarkGrey</material>
@@ -300,37 +406,97 @@
       <joint_name>wheel_rear_right_joint</joint_name>
     </plugin>
   </gazebo>
-  <gazebo reference="sensor_mount">
-    <material>Gazebo/Black</material>
-    <sensor name="lidar_sensor" type="ray">
-      <pose>0 0 0.045 0 0 0</pose>
-      <visualize>true</visualize>
-      <update_rate>10</update_rate>
-      <ray>
-        <scan>
-          <horizontal>
-            <samples>360</samples>
-            <resolution>1</resolution>
-            <min_angle>-3.14159</min_angle>
-            <max_angle>3.14159</max_angle>
-          </horizontal>
-        </scan>
-        <range>
-          <min>0.12</min>
-          <max>10.0</max>
-          <resolution>0.015</resolution>
-        </range>
-      </ray>
-      <plugin name="lidar_plugin" filename="libgazebo_ros_ray_sensor.so">
-        <ros>
-          <namespace>/</namespace>
-          <remapping>~/out:=scan</remapping>
-        </ros>
-        <output_type>sensor_msgs/LaserScan</output_type>
-        <frame_name>sensor_mount</frame_name>
-      </plugin>
-    </sensor>
-  </gazebo>
+  <!-- The original 360 deg planar LiDAR. Kept, but off by default, so the two
+       sensors can be run against each other on the same world and the same
+       mission rather than argued about. -->
+  <xacro:if value="${use_lidar}">
+    <gazebo reference="sensor_mount">
+      <material>Gazebo/Black</material>
+      <sensor name="lidar_sensor" type="ray">
+        <pose>0 0 0.045 0 0 0</pose>
+        <visualize>true</visualize>
+        <update_rate>10</update_rate>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>360</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.12</min>
+            <max>10.0</max>
+            <resolution>0.015</resolution>
+          </range>
+        </ray>
+        <plugin name="lidar_plugin" filename="libgazebo_ros_ray_sensor.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/out:=scan</remapping>
+          </ros>
+          <output_type>sensor_msgs/LaserScan</output_type>
+          <frame_name>sensor_mount</frame_name>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+  <!-- Front RGB-D depth camera, Intel RealSense D435 class.
+
+       87 deg horizontal FOV; at 424x240 the aspect gives 56.5 deg vertical.
+       Pitched 18 deg down from 0.70 m, so the optical axis meets the floor
+       2.15 m ahead and the rows at +/-0.80 m come into view 0.84 m ahead.
+
+       What this buys over the LiDAR is height. A plane at 0.77 m flies straight
+       over a toolbox on the floor. What it costs is everything past 43.5 deg
+       off the nose. There is no side or rear vision at all. -->
+  <xacro:if value="${use_depth}">
+    <gazebo reference="camera_link">
+      <material>Gazebo/Blue</material>
+      <sensor name="depth_camera" type="depth">
+        <always_on>true</always_on>
+        <!-- 10 Hz, not 15. A real D435 will do 30, but every frame costs a
+             depth render in Gazebo, a deprojection in depth_to_scan_node and
+             a redraw in rviz. At 15 Hz rviz stopped responding during
+             headland turns, where the camera sweeps across the whole
+             greenhouse at once. 10 Hz is also what the LiDAR ran at. -->
+        <update_rate>10</update_rate>
+        <visualize>true</visualize>
+        <camera name="depth_camera">
+          <horizontal_fov>1.51844</horizontal_fov>
+          <image>
+            <width>424</width>
+            <height>240</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.3</near>
+            <far>6.0</far>
+          </clip>
+          <!-- Real depth noise grows with the square of range; Gazebo only
+               offers a constant sigma, so this is the near-field figure and
+               the far field comes out optimistic. -->
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+        <plugin name="depth_camera_plugin" filename="libgazebo_ros_camera.so">
+          <ros>
+            <namespace>/</namespace>
+          </ros>
+          <camera_name>camera</camera_name>
+          <frame_name>camera_link_optical</frame_name>
+          <hack_baseline>0.07</hack_baseline>
+          <min_depth>0.3</min_depth>
+          <max_depth>6.0</max_depth>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:if>
 
   <ros2_control name="EgrobotsRoverSystem" type="system">
     <hardware>

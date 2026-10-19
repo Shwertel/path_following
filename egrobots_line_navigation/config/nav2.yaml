@@ -117,7 +117,13 @@ controller_server:
     #  yaw_goal_tolerance: 0.25
     #  stateful: True
     general_goal_checker:
-      stateful: True
+      # False, deliberately. With stateful True the checker latches "position
+      # reached" the first time the robot is inside xy_goal_tolerance and from
+      # then on checks ONLY yaw - and yaw_goal_tolerance below is 3.14, which
+      # accepts any heading at all. The two together turn the goal checker into
+      # a constant true. Either setting alone is harmless; together they are a
+      # trap, so the latch stays off.
+      stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.20
       # CHANGED from 0.25 to effectively "don't care". Pure pursuit follows a
@@ -225,6 +231,12 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+          # The synthesised scan reports inf for a bearing where nothing stood
+          # in the height band. A finite reading there would mark a phantom
+          # obstacle at whatever range the floor happened to be. inf marks
+          # nothing, and with this set it still clears the ray, which is how
+          # the robot is able to drive into space it has only seen floor in.
+          inf_is_valid: True
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
@@ -258,6 +270,12 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+          # The synthesised scan reports inf for a bearing where nothing stood
+          # in the height band. A finite reading there would mark a phantom
+          # obstacle at whatever range the floor happened to be. inf marks
+          # nothing, and with this set it still clears the ray, which is how
+          # the robot is able to drive into space it has only seen floor in.
+          inf_is_valid: True
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5

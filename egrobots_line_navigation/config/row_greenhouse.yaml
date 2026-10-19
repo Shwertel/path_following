@@ -4,11 +4,29 @@
 # than flat, and the lane changes width along its length. So the search windows
 # shrink, the inlier threshold widens to accept a bumpy edge, and the stored
 # width is allowed to follow the measured one.
+#
+# RETUNED for the front depth camera. The LiDAR profile is kept beside this
+# file as row_greenhouse_lidar.yaml, for sensor_suite:=lidar.
+#
+# The camera sees an 87 degree cone ahead and nothing else. The old profile
+# fitted rows from points 1.5 m BEHIND the rover out to 5 m ahead, using the
+# rows abreast of it, which were the best-conditioned points it had. None of
+# that is available now, so every row fit is an extrapolation backwards from
+# points 1 to 5 m ahead.
 row_localizer_node:
   ros__parameters:
-    min_range: 0.15
-    max_range: 6.0
-    along_window_min: -1.5
+    min_range: 0.35           # the camera's own floor is 0.3
+    max_range: 5.0            # 6.0 is reachable but noisy at the far end
+    # Nothing exists behind the lower bound any more. The nearest return from
+    # a row at +/-0.8 m lands about 1.14 m ahead in the robot frame, because
+    # the row only enters the 87 degree cone 0.84 m ahead of a camera that is
+    # itself 0.30 m forward of base_link.
+    # 1.2, not 0.5. A row at +/-0.8 m sits at 43 deg off the nose when it is
+    # only 0.84 m ahead, which is the very edge of the cone. Including those
+    # points makes the fit sensitive to a degree or two of yaw, because a small
+    # turn clips them out of view. From 1.2 m ahead the row is inside 34 deg
+    # and stays in view through normal steering.
+    along_window_min: 1.2
     along_window_max: 5.0
     startup_side_min: 0.35       # the rows sit about 0.8 m either side
     startup_side_max: 1.8
@@ -18,7 +36,10 @@ row_localizer_node:
     ransac_threshold: 0.12       # foliage is rough; a flat car panel is not
     min_inliers: 8
     min_span: 1.5
-    max_heading_disagreement_deg: 25.0
+    # 25 deg was permissive enough to let a bad single-row fit through one
+    # step at a time until the estimate had walked 34 deg off. The prediction
+    # is IMU-anchored, so it is never 10 deg wrong on its own.
+    max_heading_disagreement_deg: 10.0
     max_width_error: 0.45
     width_tracking_gain: 0.08
 
@@ -34,3 +55,8 @@ row_localizer_node:
     heading_std_deg: 2.0
     along_std: 50.0
     single_row_inflation: 2.0
+    # The decisive one for this sensor. See the node for what went wrong when
+    # a single row was allowed to set the heading from an 87 degree cone.
+    single_row_sets_heading: false
+    # And in fact do not use a single row at all. See the node.
+    require_both_rows: true

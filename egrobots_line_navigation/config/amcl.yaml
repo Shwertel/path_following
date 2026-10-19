@@ -43,10 +43,15 @@ amcl:
     global_frame_id: "map"
     lambda_short: 0.1
     laser_likelihood_max_dist: 2.0
-    laser_max_range: 10.0           # CHANGED: the sensor's real maximum
-    laser_min_range: 0.12           # CHANGED: the sensor's real minimum
+    # RETUNED for the depth camera. The synthesised scan carries 175 beams
+    # across 87 degrees instead of 360 across the full circle, so amcl now
+    # has a forward cone and nothing else to match against the map.
+    laser_max_range: 5.5            # the camera is usable to about 5 m
+    laser_min_range: 0.35           # the camera cannot focus closer
     laser_model_type: "likelihood_field"
-    max_beams: 90                   # CHANGED: 360 beams available, and inside
+    # Use more of what is left. 120 of 175 beams, against 90 of 360 before.
+    # Each beam matters more when there are fewer of them.
+    max_beams: 120                  # CHANGED: 360 beams available, and inside
                                     # a lane most land on the same two rows
     max_particles: 2000
     min_particles: 500

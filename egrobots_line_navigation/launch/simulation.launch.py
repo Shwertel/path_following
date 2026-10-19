@@ -17,7 +17,8 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (Command, LaunchConfiguration, PathJoinSubstitution,
+                                  PythonExpression)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -30,7 +31,9 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration('rviz')
     use_gui = LaunchConfiguration('gui')
     world_path = PathJoinSubstitution([pkg_share, 'worlds', LaunchConfiguration('world')])
-    robot_description = ParameterValue(Command(['xacro ', xacro_path]), value_type=str)
+    sensor_suite = LaunchConfiguration('sensor_suite')
+    robot_description = ParameterValue(
+        Command(['xacro ', xacro_path, ' sensor_suite:=', sensor_suite]), value_type=str)
 
     gazebo_pkg = get_package_share_directory('gazebo_ros')
     gazebo_launch = IncludeLaunchDescription(
@@ -40,6 +43,15 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
+        # Which sensor the rover carries. 'depth' is the front RGB-D camera,
+        # 'lidar' the original 360 deg planar scanner, 'both' for comparison.
+        # Everything downstream consumes /scan either way: with 'depth' that
+        # scan is synthesised by depth_to_scan_node.
+        DeclareLaunchArgument('sensor_suite', default_value='depth'),
+        # Where the synthesised scan goes. Point it elsewhere when running
+        # sensor_suite:=both, so the LiDAR keeps /scan and the two can be
+        # compared rather than collide.
+        DeclareLaunchArgument('depth_scan_topic', default_value='/scan'),
         # gui:=false runs Gazebo headless - no gzclient, no OpenGL. Useful when
         # the graphics stack is unavailable; the LiDAR is a CPU ray sensor, so
         # physics and sensing are unaffected.
@@ -68,6 +80,17 @@ def generate_launch_description():
              arguments=['joint_state_broadcaster'], output='screen'),
         Node(package='controller_manager', executable='spawner',
              arguments=['diff_drive_controller'], output='screen'),
+        # With the depth camera there is no scanner on the robot, so the scan
+        # the rest of the stack consumes has to be made. This flattens a
+        # height band of the depth cloud into a LaserScan; see the node for
+        # why the band, and not the whole cloud.
+        Node(package='egrobots_line_navigation', executable='depth_to_scan_node',
+             name='depth_to_scan_node', output='screen',
+             condition=IfCondition(
+                 PythonExpression(["'", sensor_suite, "' != 'lidar'"])),
+             parameters=[os.path.join(pkg_share, 'config', 'depth_to_scan.yaml'),
+                         {'use_sim_time': True,
+                          'scan_topic': LaunchConfiguration('depth_scan_topic')}]),
         # Commanded velocity -> motion prior for the EKF (no wheel feedback).
         Node(package='egrobots_line_navigation', executable='cmd_prior_node',
              name='cmd_prior_node', output='screen',
