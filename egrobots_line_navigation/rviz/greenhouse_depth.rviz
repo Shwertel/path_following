@@ -514,7 +514,7 @@ Visualization Manager:
       Value: /waypoints
     Value: true
   - Class: rviz_default_plugins/Image
-    Enabled: true
+    Enabled: false
     Name: Depth camera (RGB)
     Topic:
       Depth: 5

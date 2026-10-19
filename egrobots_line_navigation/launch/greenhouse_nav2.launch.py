@@ -14,7 +14,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, GroupAction,
-                            IncludeLaunchDescription, TimerAction)
+                            IncludeLaunchDescription, SetEnvironmentVariable,
+                            TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -30,6 +31,22 @@ def generate_launch_description():
             launch_arguments=args.items() if args else None)
 
     return LaunchDescription([
+        # FastDDS with shared memory turned off, UDP only.
+        #
+        # The shared-memory transport leaves robust mutexes in /dev/shm owned by
+        # the process that created them. Kill that process hard - which is what
+        # tearing this stack down does - and the next process to touch the
+        # segment aborts on
+        #   pthread_mutex_lock.c: Assertion `e != ESRCH || !robust' failed
+        # which is how rviz kept dying. The same stale state wedged nav2's
+        # lifecycle_manager part way through bringup, forever, with no timeout.
+        #
+        # UDP over loopback costs a little throughput on the depth image; the
+        # profile enlarges the socket buffers to cover it.
+        SetEnvironmentVariable(
+            'FASTRTPS_DEFAULT_PROFILES_FILE',
+            os.path.join(pkg_share, 'config', 'fastdds_udp.xml')),
+
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('sensor_suite', default_value='depth'),
@@ -46,9 +63,15 @@ def generate_launch_description():
         TimerAction(period=35.0, actions=[Node(
             package='rviz2', executable='rviz2', name='rviz2', output='screen',
             # Our own view, not nav2's stock one. Same map, costmaps, path
-            # and particle cloud, plus the camera image, the points that
-            # survived the height filter, and the scan synthesised from them,
-            # so the whole depth pipeline is visible at once.
+            # and particle cloud, plus the points that survived the height
+            # filter and the scan synthesised from them.
+            #
+            # The "Depth camera (RGB)" Image display in it is deliberately off.
+            # It uploads a 424x240 texture to its own render panel every frame
+            # and that is what was hanging rviz - the window would stop
+            # responding and offer to force quit, worst around the headlands
+            # where the view changes fastest. Tick it on if you want to see
+            # what the camera sees, but expect that back.
             arguments=['-d', os.path.join(pkg_share, 'rviz', 'greenhouse_depth.rviz')],
             parameters=[{'use_sim_time': True}],
             condition=IfCondition(LaunchConfiguration('rviz')))]),

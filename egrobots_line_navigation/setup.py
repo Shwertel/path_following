@@ -12,7 +12,11 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        # .xml too, for the FastDDS transport profile. Without it the profile
+        # silently does not reach the install tree, FASTRTPS_DEFAULT_PROFILES_FILE
+        # points at nothing, and FastDDS quietly falls back to shared memory.
+        (os.path.join('share', package_name, 'config'),
+         glob('config/*.yaml') + glob('config/*.xml')),
         (os.path.join('share', package_name, 'urdf'), glob('urdf/*.xacro')),
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*.world')),
         (os.path.join('share', package_name, 'maps'), glob('maps/*')),

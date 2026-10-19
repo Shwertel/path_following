@@ -14,7 +14,8 @@ crop rows, with the search windows and thresholds of config/row_greenhouse.yaml.
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
+                            SetEnvironmentVariable)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, LaunchConfiguration, PathJoinSubstitution,
@@ -42,6 +43,22 @@ def generate_launch_description():
         launch_arguments={'world': world_path, 'gui': use_gui}.items())
 
     return LaunchDescription([
+        # FastDDS with shared memory turned off, UDP only.
+        #
+        # The shared-memory transport leaves robust mutexes in /dev/shm owned by
+        # the process that created them. Kill that process hard - which is what
+        # tearing this stack down does - and the next process to touch the
+        # segment aborts on
+        #   pthread_mutex_lock.c: Assertion `e != ESRCH || !robust' failed
+        # which is how rviz kept dying. The same stale state wedged nav2's
+        # lifecycle_manager part way through bringup, forever, with no timeout.
+        #
+        # UDP over loopback costs a little throughput on the depth image; the
+        # profile enlarges the socket buffers to cover it.
+        SetEnvironmentVariable(
+            'FASTRTPS_DEFAULT_PROFILES_FILE',
+            os.path.join(pkg_share, 'config', 'fastdds_udp.xml')),
+
         DeclareLaunchArgument('rviz', default_value='true'),
         # Which sensor the rover carries. 'depth' is the front RGB-D camera,
         # 'lidar' the original 360 deg planar scanner, 'both' for comparison.
