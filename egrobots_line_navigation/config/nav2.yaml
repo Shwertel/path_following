@@ -297,7 +297,21 @@ global_costmap:
         # this rover; inflate by more than that and the lane becomes solid
         # and the planner refuses to enter it. This is the single most common
         # reason stock Nav2 does not work on a row-crop robot.
-        inflation_radius: 0.40
+        # 0.25, deliberately BELOW the footprint's inscribed radius of 0.30.
+        # The band the planner REFUSES is min(inflation_radius, inscribed) -
+        # every cell inside the inscribed radius is marked INSCRIBED and
+        # GridBased will neither start in one nor route through one. At 0.40
+        # the refused band was the full 0.30 from each row face, leaving about
+        # 0.8 m of a 1.6 m lane once the rows' wander is counted, so a lateral
+        # pose error over roughly 0.4 m made the lane unplannable. Amcl on this
+        # camera has been measured 0.73 m out after a headland turn, which is
+        # exactly where lane 2 kept being declared blocked and the planner
+        # rerouted around the outside instead.
+        #
+        # This loosens PLANNING only. The local costmap keeps its 0.40 and the
+        # collision monitor still stops on raw scan, so the rover does not
+        # drive any closer to the plants because of this.
+        inflation_radius: 0.25
       # False, not True. With True the whole grid is republished every cycle -
       # for the global costmap that is 698 x 318 = 222k cells every second -
       # and rviz rebuilds the entire texture each time. That is what left the
