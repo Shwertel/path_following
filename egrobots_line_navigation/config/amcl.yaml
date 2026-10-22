@@ -19,24 +19,14 @@ map_server:
 amcl:
   ros__parameters:
     use_sim_time: True
-    # MOTION MODEL NOISE. These say how much to distrust odometry, so raising
-    # them spreads the particle cloud and makes amcl lean harder on the scan.
-    # With a 360 degree scanner that was a good trade. With an 87 degree cone
-    # it is backwards: the scan is now the weak input and the EKF's odometry,
-    # anchored by the IMU, is the strong one. Lowered throughout.
-    alpha1: 0.15                    # rotation noise from translation
-    alpha2: 0.10                    # rotation noise from rotation
-    alpha3: 0.20                    # translation noise from translation
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.3                     # TUNED: translation noise from translation.
                                     # Odometry here is dead-reckoned along the lane
                                     # and drifts about a centimetre per metre, so the
                                     # filter should trust the scan more than the
                                     # default assumes.
-    # The decisive one. Translation noise from ROTATION, and the largest alpha
-    # by far. A headland turn is 90 to 112 degrees, so at 0.4 the cloud was
-    # sprayed sideways exactly while the camera swept open space with no rows
-    # in view to pull it back. Every lane failure seen so far happened straight
-    # after a headland turn. The sideways scrub it covered is handled by the EKF.
-    alpha4: 0.15                    # was 0.4
+    alpha4: 0.4                     # TUNED: translation noise from ROTATION, and the
                                     # one that matters most here. A skid-steer scrubs
                                     # sideways as it pivots - that slide is the whole
                                     # reason this project measures position against
@@ -63,9 +53,8 @@ amcl:
     # Each beam matters more when there are fewer of them.
     max_beams: 120                  # CHANGED: 360 beams available, and inside
                                     # a lane most land on the same two rows
-    # More hypotheses, because each scan carries less information than before.
-    max_particles: 3000
-    min_particles: 800
+    max_particles: 2000
+    min_particles: 500
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
@@ -77,16 +66,13 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    # 0.1 rad is 5.7 degrees, so a 112 degree headland turn ran about twenty
-    # filter updates back to back, each a poor scan match against an empty
-    # headland and each a chance to walk the estimate off. At 0.30 that is
-    # about six, and odometry carries the rest of the turn.
-    update_min_a: 0.30              # was 0.1
-    update_min_d: 0.15              # was 0.10
-    # Fewer beams means each should count for more.
-    z_hit: 0.6                      # was 0.5
+    update_min_a: 0.1               # TUNED: likewise for rotation, so a pivot gets
+                                    # corrected during it rather than after it.
+    update_min_d: 0.10              # TUNED: correct every 10 cm rather than every 25.
+                                    # More scan matches per metre, at more CPU.
+    z_hit: 0.5
     z_max: 0.05
-    z_rand: 0.4                     # was 0.5
+    z_rand: 0.5
     z_short: 0.05
     scan_topic: scan
 
