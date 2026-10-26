@@ -85,6 +85,7 @@ private:
   double align_tolerance_{0.0698};     // 4 degrees
   double rotate_in_place_{0.785};      // 45 degrees: beyond this, turn on the spot
   double min_speed_fraction_{0.4};     // floor under the cornering speed taper
+  bool turn_in_place_only_{true};      // never rotate and translate at once
   double heading_kp_{2.5};
   double cross_track_kp_{1.5};
   double max_correction_{0.873};       // 50 degrees

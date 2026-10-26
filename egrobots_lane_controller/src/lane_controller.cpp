@@ -1,6 +1,7 @@
 #include "egrobots_lane_controller/lane_controller.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -44,6 +45,10 @@ void LaneController::configure(
   declare_parameter_if_not_declared(node, p("max_correction_deg"), rclcpp::ParameterValue(50.0));
   declare_parameter_if_not_declared(node, p("cross_track_deadband"), rclcpp::ParameterValue(0.03));
   declare_parameter_if_not_declared(node, p("rotate_in_place_deg"), rclcpp::ParameterValue(45.0));
+  // The real rover cannot rotate and translate at once. With this true the
+  // controller only ever issues a pure pivot or a pure straight run, and
+  // rotate_in_place_deg is unused.
+  declare_parameter_if_not_declared(node, p("turn_in_place_only"), rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(node, p("min_speed_fraction"), rclcpp::ParameterValue(0.4));
   declare_parameter_if_not_declared(node, p("lane_offset"), rclcpp::ParameterValue(0.0));
   declare_parameter_if_not_declared(node, p("lane_timeout"), rclcpp::ParameterValue(1.0));
@@ -63,6 +68,7 @@ void LaneController::configure(
   double rotate_deg;
   node->get_parameter(p("rotate_in_place_deg"), rotate_deg);
   node->get_parameter(p("min_speed_fraction"), min_speed_fraction_);
+  node->get_parameter(p("turn_in_place_only"), turn_in_place_only_);
   rotate_in_place_ = rotate_deg * M_PI / 180.0;
   node->get_parameter(p("lane_offset"), lane_offset_);
   node->get_parameter(p("lane_timeout"), lane_timeout_);
@@ -167,9 +173,32 @@ bool LaneController::headingFromPlan(
     return out;
   };
 
-  // The first pose on the plan at least lookahead_ away: the carrot.
-  for (const auto & p : global_plan_.poses) {
-    const auto q = to_costmap_frame(p);
+  // Find where the rover is ALONG the plan first, then take the carrot from
+  // there. Searching the whole plan from its start, as this used to, returns
+  // the first pose merely far enough away - which, once the rover is well down
+  // a long path, is the pose BEHIND it at the very beginning. The rover then
+  // turns round and drives back to the start. It drove 19.9 m up a lane and
+  // 18.7 m back out again before this was spotted.
+  //
+  // It never showed while legs came through NavigateToPose, because the
+  // behaviour tree replans at 1 Hz and every plan therefore began at the
+  // rover. A path sent once and left alone has no such property.
+  size_t closest = 0;
+  double closest_d = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < global_plan_.poses.size(); ++i) {
+    const auto q = to_costmap_frame(global_plan_.poses[i]);
+    const double d = std::hypot(
+      q.pose.position.x - pose.pose.position.x,
+      q.pose.position.y - pose.pose.position.y);
+    if (d < closest_d) {
+      closest_d = d;
+      closest = i;
+    }
+  }
+
+  // The first pose at or beyond lookahead_, searching FORWARD from there.
+  for (size_t i = closest; i < global_plan_.poses.size(); ++i) {
+    const auto q = to_costmap_frame(global_plan_.poses[i]);
     const double dx = q.pose.position.x - pose.pose.position.x;
     const double dy = q.pose.position.y - pose.pose.position.y;
     if (std::hypot(dx, dy) >= lookahead_) {
@@ -241,12 +270,28 @@ geometry_msgs::msg::TwistStamped LaneController::computeVelocityCommands(
   // ~0.1 rad/s at which this skid-steer breaks away from rest; once the wheels
   // are rolling, an arbitrarily small angular command executes fine. Applying
   // that floor to a rolling correction is what made the steering twitch.
-  if (std::abs(error) > rotate_in_place_) {
+  // turn_in_place_only is the real machine's constraint, not a tuning choice.
+  // It never rotates while translating, so the command is either a pure pivot
+  // or a pure straight run and never a blend of the two. Arc steering is
+  // smoother and tracks a lane better, but this platform cannot do it, so a
+  // simulation that arcs is not simulating this robot.
+  const double threshold = turn_in_place_only_ ? align_tolerance_ : rotate_in_place_;
+
+  if (std::abs(error) > threshold) {
+    // Pure rotation. min_pivot_speed clears the roughly 0.1 rad/s at which this
+    // skid-steer breaks away from rest, which matters here in a way it did not
+    // for arc steering: every correction now starts from a standstill.
     const double floor_rate = std::min(min_pivot_speed_, max_angular_vel_);
     const double rate = std::min(
       max_angular_vel_, std::max(floor_rate, heading_kp_ * std::abs(error)));
     cmd.twist.angular.z = std::copysign(rate, error);
     cmd.twist.linear.x = 0.0;
+  } else if (turn_in_place_only_) {
+    // Pure translation. No angular term at all, however small the residual
+    // heading error: the alternative is a blend, which is the thing being
+    // excluded.
+    cmd.twist.angular.z = 0.0;
+    cmd.twist.linear.x = desired_linear_vel_ * speed_limit_;
   } else {
     cmd.twist.angular.z = std::clamp(
       heading_kp_ * error, -max_angular_vel_, max_angular_vel_);

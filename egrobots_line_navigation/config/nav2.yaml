@@ -144,12 +144,36 @@ controller_server:
       plugin: "egrobots_lane_controller::LaneController"
       desired_linear_vel: 0.6
       max_angular_vel: 1.2
-      min_pivot_speed: 0.6
-      align_tolerance_deg: 4.0
+      # Both retuned for turn_in_place_only, where they mean something they did
+      # not mean under arc steering.
+      #
+      # min_pivot_speed is the floor under a pivot, there to clear the ~0.1
+      # rad/s at which this skid-steer breaks away from rest. At 0.6 a single
+      # 10 Hz cycle turns 3.4 degrees, which is coarser than the corrections
+      # lane-following needs, so the rover could only ever over- or under-shoot
+      # a small re-aim. At 0.25 a cycle is 1.4 degrees. It cannot go much below
+      # this: the collision monitor's slowdown multiplies it by 0.6, and
+      # 0.25 x 0.6 = 0.15 is still clear of breakaway, where 0.15 x 0.6 = 0.09
+      # would freeze the rover outright, as it once did for 34 s.
+      min_pivot_speed: 0.25
+      # 2 degrees, down from 4. Under arc steering cross-track error was
+      # corrected continuously while driving. It cannot be now - straight means
+      # angular.z = 0 - so the only correction is to stop and re-aim, and the
+      # rover must do that far more often. At 4 degrees it did not: a 3 cm
+      # offset asks for 2.6 degrees of correction via cross_track_kp, never
+      # reached the threshold, and the rover drove straight on while drifting
+      # until it was in the plants.
+      align_tolerance_deg: 2.0
       heading_kp: 2.5
       cross_track_kp: 1.5
       max_correction_deg: 50.0
-      cross_track_deadband: 0.03
+      # 0.10, up from 0.03. Every cross-track correction now costs a full stop
+      # and pivot, and each pivot feeds rotational noise into amcl while giving
+      # it a sweeping, feature-poor view. At 0.03 the rover pivoted on 48% of
+      # all control cycles and amcl drifted 0.84 m, far enough that the planner
+      # declared a perfectly centred rover blocked. Ignoring offsets under
+      # 10 cm trades a little lane accuracy for far fewer pivots.
+      cross_track_deadband: 0.10
       lane_offset: 0.0
       lane_timeout: 1.0
       lookahead_dist: 0.6
@@ -172,7 +196,16 @@ controller_server:
       # A skid-steer cannot follow a tight arc, so turn on the spot when the
       # path doubles back - which is exactly what a headland turn does.
       use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.6
+      # 0.10 rad, about 6 degrees, down from 0.6. Above this angle pure pursuit
+      # stops and rotates on the spot instead of arcing, so a small threshold
+      # pushes it as close to the real rover's turn-then-drive behaviour as this
+      # controller can get.
+      #
+      # It cannot get all the way. Below the threshold pure pursuit still issues
+      # curvature, i.e. linear and angular together, which is exactly the motion
+      # this platform cannot perform. Only the legs driven by FollowLane are
+      # strictly point-turn. See the sweep's measured blend fraction.
+      rotate_to_heading_min_angle: 0.10
       rotate_to_heading_angular_vel: 1.2   # matches the navigator's angular_speed
       max_angular_accel: 4.0
       allow_reversing: false

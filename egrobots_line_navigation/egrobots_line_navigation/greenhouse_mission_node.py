@@ -43,6 +43,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from geometry_msgs.msg import Point, PoseStamped
+from nav_msgs.msg import Path
 from rcl_interfaces.srv import SetParameters
 from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -54,7 +55,7 @@ from tf2_ros import (Buffer, TransformListener, LookupException,
 
 TF_ERRORS = (LookupException, ExtrapolationException, ConnectivityException)
 
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import FollowPath, NavigateToPose
 
 from egrobots_line_interfaces.action import FollowLine
 
@@ -138,7 +139,16 @@ class GreenhouseMission(Node):
         # why an earlier test appeared to run the lane controller and was in
         # fact running pure pursuit the whole time.
         self.declare_parameter('lane_controller', 'FollowLane')
-        self.declare_parameter('open_controller', 'FollowPath')
+        # FollowLane, not FollowPath, even on the open legs. Pure pursuit
+        # steers by curvature, so below its rotate-to-heading threshold it
+        # commands linear and angular together - the one motion this rover
+        # cannot perform. It measured 4.1% of a sweep blended. FollowLane with
+        # no lane in view falls back to following the plan, and does that with
+        # the same strict pivot-then-drive rule, so the whole sweep complies.
+        self.declare_parameter('open_controller', 'FollowLane')
+        # Lane legs skip NavigateToPose and the global planner entirely, and
+        # are sent as a straight path straight to the controller.
+        self.declare_parameter('lane_bypasses_planner', True)
 
         # What a failed leg means for the sweep is this node's decision. A lane
         # it cannot drive is reported as blocked and left for someone to clear,
@@ -155,6 +165,8 @@ class GreenhouseMission(Node):
 
         self.navigator = ActionClient(self, FollowLine, '/follow_line')
         self.nav2 = ActionClient(self, NavigateToPose, '/navigate_to_pose')
+        # Lane legs go straight to the controller, bypassing the planner.
+        self.follow_path = ActionClient(self, FollowPath, '/follow_path')
         self.set_params = self.create_client(
             SetParameters, f'{NAVIGATOR}/set_parameters')
         self.reset_lane = self.create_client(Trigger, f'{LOCALIZER}/reset_lane')
@@ -406,14 +418,99 @@ class GreenhouseMission(Node):
             f'at ({here[0]:.2f}, {here[1]:.2f})')
         return ok, here
 
+    def run_lane_leg(self, leg):
+        """Drive a lane leg by handing the controller a straight path directly.
+
+        No planner. A lane leg does not need one: FollowLane steers by the rows
+        it measures, and uses the path only for a heading reference and a goal.
+        Routing it through NavigateToPose meant the global planner had a veto,
+        and it kept exercising it - GridBased refuses to plan from a pose that
+        sits in an inscribed cell, and amcl on this camera drifts 0.6 to 0.85 m
+        after a headland turn, which is enough to put a perfectly centred rover
+        inside a row as far as the map is concerned. Three sweeps died that way
+        with ground truth showing the rover dead centre in the lane.
+
+        A straight line from here to the goal is the right path anyway. The
+        lane is straight, and the controller corrects against the rows rather
+        than against this.
+        """
+        # The leg already names both ends in the plan frame, so the path is
+        # built from those and needs no transform at all. Using the live pose
+        # here was a mistake: where_am_i composes map -> odom -> base_link, and
+        # amcl stamps map -> odom a second into the future as its transform
+        # tolerance, so the composed lookup raises ExtrapolationException often
+        # enough to kill a leg outright. run_nav2_leg only ever used it for a
+        # log line, with a fallback, which is why that never showed up before.
+        here = leg.start
+
+        frame = self.get_parameter('plan_frame').value
+        gx, gy = leg.goal
+        heading = math.atan2(gy - here[1], gx - here[0])
+        span = math.hypot(gx - here[0], gy - here[1])
+
+        path = Path()
+        path.header.frame_id = frame
+        path.header.stamp = self.get_clock().now().to_msg()
+        steps = max(2, int(span / 0.25))
+        for i in range(steps + 1):
+            f = i / steps
+            pose = PoseStamped()
+            pose.header.frame_id = frame
+            pose.pose.position = Point(
+                x=here[0] + (gx - here[0]) * f,
+                y=here[1] + (gy - here[1]) * f, z=0.0)
+            pose.pose.orientation.z = math.sin(heading / 2.0)
+            pose.pose.orientation.w = math.cos(heading / 2.0)
+            path.poses.append(pose)
+
+        self.select_controller(self.get_parameter('lane_controller').value)
+        self.get_logger().info(
+            f'--> {leg}  [direct to controller, {len(path.poses)} poses, '
+            f'{span:.1f} m, no planner]')
+
+        goal = FollowPath.Goal()
+        goal.path = path
+        goal.controller_id = self.get_parameter('lane_controller').value
+        send = self.follow_path.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send)
+        handle = send.result()
+        if handle is None or not handle.accepted:
+            self.get_logger().error(f'{leg.name}: controller rejected the path')
+            return False, here
+
+        result = handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result)
+        ok = result.result().status == 4          # STATUS_SUCCEEDED
+        there = self.where_am_i() or leg.goal
+        self.get_logger().info(
+            f'    {leg.name}: {"done" if ok else "FAILED"} direct — '
+            f'at ({there[0]:.2f}, {there[1]:.2f})')
+        return ok, there
+
     def where_am_i(self):
-        """The rover's position in the plan frame, from TF."""
+        """The rover's position in the plan frame, from TF.
+
+        Composed by hand out of plan -> odom and odom -> base_link rather than
+        asked for in one go. amcl publishes map -> odom stamped into the future
+        by its transform_tolerance, and a single composed lookup across that
+        raises ExtrapolationException often enough to matter, while each hop on
+        its own resolves fine.
+        """
+        plan = self.get_parameter('plan_frame').value
+        odom = self.get_parameter('odom_frame').value
         try:
-            tr = self.tf_buffer.lookup_transform(
-                self.get_parameter('plan_frame').value, 'base_link', Time())
+            a = self.tf_buffer.lookup_transform(plan, odom, Time()).transform
+            b = self.tf_buffer.lookup_transform(odom, 'base_link', Time()).transform
         except TF_ERRORS:
             return None
-        return (tr.transform.translation.x, tr.transform.translation.y)
+        q = a.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        x = a.translation.x + b.translation.x * math.cos(yaw) \
+            - b.translation.y * math.sin(yaw)
+        y = a.translation.y + b.translation.x * math.sin(yaw) \
+            + b.translation.y * math.cos(yaw)
+        return (x, y)
 
     def select_controller(self, name):
         """Tell the behaviour tree which controller to drive the next leg with."""
@@ -437,6 +534,9 @@ class GreenhouseMission(Node):
                 # Anchor this lane, not the last one, before driving it.
                 if self.call(self.reset_lane, Trigger.Request()) is None:
                     self.get_logger().warn('Lane reset failed; continuing')
+                # Straight to the controller. The planner has no say in a lane.
+                if self.get_parameter('lane_bypasses_planner').value:
+                    return self.run_lane_leg(leg)
                 self.select_controller(self.get_parameter('lane_controller').value)
             else:
                 self.select_controller(self.get_parameter('open_controller').value)
