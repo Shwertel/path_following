@@ -37,6 +37,7 @@ cancels.
 
 import math
 import sys
+import time
 
 import rclpy
 from rclpy.action import ActionClient
@@ -346,6 +347,27 @@ class GreenhouseMission(Node):
                 return False
         return True
 
+    def wait_for_action(self, client, name, timeout=20.0):
+        """Wait for an action server to be discoverable, while spinning.
+
+        ActionClient.wait_for_server blocks this thread without servicing the
+        node, so on a single-threaded spin the graph event that marks the
+        server ready never gets processed and the wait expires with the server
+        sitting there answering. Spinning in short slices lets discovery
+        finish. The wait matters because send_goal_async to a server that has
+        not been discovered yet returns a future that is never completed, and
+        the wait on that future has no timeout - the sweep stops dead on the
+        first lane leg with no error, which it did in six of fifteen runs.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if client.server_is_ready():
+                return True
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self.get_logger().error(
+            f'No {name} action server after {timeout:.0f} s')
+        return False
+
     def call(self, client, request):
         future = client.call_async(request)
         rclpy.spin_until_future_complete(self, future, timeout_sec=15.0)
@@ -402,10 +424,16 @@ class GreenhouseMission(Node):
         self.get_logger().info(
             f'--> {leg}  [nav2: '
             f'{self.get_parameter("lane_controller").value if leg.lane else self.get_parameter("open_controller").value}]')
+        if not self.wait_for_action(self.nav2, '/navigate_to_pose'):
+            return False, leg.start
         send = self.nav2.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send)
+        rclpy.spin_until_future_complete(self, send, timeout_sec=10.0)
         handle = send.result()
-        if handle is None or not handle.accepted:
+        if handle is None:
+            self.get_logger().error(
+                f'{leg.name}: Nav2 never acknowledged the goal')
+            return False, leg.start
+        if not handle.accepted:
             self.get_logger().error(f'{leg.name}: Nav2 rejected the goal')
             return False, leg.start
 
@@ -471,10 +499,16 @@ class GreenhouseMission(Node):
         goal = FollowPath.Goal()
         goal.path = path
         goal.controller_id = self.get_parameter('lane_controller').value
+        if not self.wait_for_action(self.follow_path, '/follow_path'):
+            return False, here
         send = self.follow_path.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send)
+        rclpy.spin_until_future_complete(self, send, timeout_sec=10.0)
         handle = send.result()
-        if handle is None or not handle.accepted:
+        if handle is None:
+            self.get_logger().error(
+                f'{leg.name}: /follow_path never acknowledged the goal')
+            return False, here
+        if not handle.accepted:
             self.get_logger().error(f'{leg.name}: controller rejected the path')
             return False, here
 
