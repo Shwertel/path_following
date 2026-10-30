@@ -125,7 +125,7 @@ controller_server:
       # trap, so the latch stays off.
       stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.20
+      xy_goal_tolerance: 0.08
       # CHANGED from 0.25 to effectively "don't care". Pure pursuit follows a
       # path and stops when the path runs out; unlike DWB it does not rotate to
       # a final goal heading. Demand one and the goal checker never passes: the
@@ -163,17 +163,21 @@ controller_server:
       # offset asks for 2.6 degrees of correction via cross_track_kp, never
       # reached the threshold, and the rover drove straight on while drifting
       # until it was in the plants.
-      align_tolerance_deg: 2.0
+      align_tolerance_deg: 5.0
       heading_kp: 2.5
-      cross_track_kp: 1.5
-      max_correction_deg: 50.0
+      cross_track_kp: 0.8
+      max_correction_deg: 25.0
       # 0.10, up from 0.03. Every cross-track correction now costs a full stop
       # and pivot, and each pivot feeds rotational noise into amcl while giving
       # it a sweeping, feature-poor view. At 0.03 the rover pivoted on 48% of
       # all control cycles and amcl drifted 0.84 m, far enough that the planner
       # declared a perfectly centred rover blocked. Ignoring offsets under
       # 10 cm trades a little lane accuracy for far fewer pivots.
-      cross_track_deadband: 0.10
+      # The lane is 1.60 m of free corridor and the rover is 0.64 m wide, so
+      # there is 0.48 m of clearance a side. Correcting at 10 cm bought
+      # precision nobody needs and cost a pivot each time: 47% of all motion
+      # was turning on the spot. At 0.25 m with the gains below it is 25%.
+      cross_track_deadband: 0.25
       lane_offset: 0.0
       lane_timeout: 1.0
       lookahead_dist: 0.6

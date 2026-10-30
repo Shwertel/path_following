@@ -92,6 +92,7 @@ private:
   double cross_track_deadband_{0.03};
   double lane_offset_{0.0};
   double lane_timeout_{1.0};
+  bool use_lane_{true};                // false: steer by the plan only
   double lookahead_{0.6};
   std::string lane_topic_{"/lane_centreline"};
 

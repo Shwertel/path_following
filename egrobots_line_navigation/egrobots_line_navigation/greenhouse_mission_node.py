@@ -45,7 +45,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
-from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.time import Time
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
@@ -61,6 +61,7 @@ from nav2_msgs.action import FollowPath, NavigateToPose
 from egrobots_line_interfaces.action import FollowLine
 
 NAVIGATOR = '/line_navigator_node'
+CONTROLLER = '/controller_server'
 LOCALIZER = '/row_localizer_node'
 
 
@@ -90,9 +91,9 @@ class GreenhouseMission(Node):
 
         # The lanes, in the order they are driven. Defaults match
         # greenhouse_world.world: three lanes 2.05 m apart.
-        self.declare_parameter('lane_centres', [0.0, 2.05, -2.05])
+        self.declare_parameter('lane_centres', [0.0, 1.90, -2.05])
         self.declare_parameter('near_headland_x', 0.5)
-        self.declare_parameter('far_headland_x', 24.0)
+        self.declare_parameter('far_headland_x', 23.5)
         self.declare_parameter('charging_bay', [26.3, 0.0])
         # How far in front of the bay to line up, so the rover parks straight.
         self.declare_parameter('bay_approach', 1.8)
@@ -150,6 +151,24 @@ class GreenhouseMission(Node):
         # Lane legs skip NavigateToPose and the global planner entirely, and
         # are sent as a straight path straight to the controller.
         self.declare_parameter('lane_bypasses_planner', True)
+        # Turn the lane controller's lane steering off for the legs that are
+        # not lanes. In a headland there is no lane to steer by, but the last
+        # one measured is anchored in odom and stays inside lane_timeout, so
+        # the controller keeps correcting towards a lane the rover has already
+        # left. Off by default: it changes how every turn is driven.
+        self.declare_parameter('headland_ignores_lane', True)
+        self.declare_parameter('amcl_update_min_d', 0.10)
+        # How close a LANE leg has to get to its end point. SimpleGoalChecker
+        # measures that radially in the map frame, and amcl's error in a lane
+        # is mostly across it: measured, the rover arrived within 8 cm along
+        # the lane while amcl believed it was 0.6 m off to the side, so the
+        # radial test never passed, the leg never ended, and the rover drove
+        # 5 m out through the end wall still following the lane. Being out of
+        # the rows is what matters at a lane end, not being within a hand's
+        # width of a point. The turns keep the tight tolerance, which is where
+        # the undershoot into the next lane actually matters. 0 disables it.
+        self.declare_parameter('lane_xy_goal_tolerance', 0.60)
+        self.turn_xy = None         # the tolerance the server started with
 
         # What a failed leg means for the sweep is this node's decision. A lane
         # it cannot drive is reported as blocked and left for someone to clear,
@@ -170,6 +189,10 @@ class GreenhouseMission(Node):
         self.follow_path = ActionClient(self, FollowPath, '/follow_path')
         self.set_params = self.create_client(
             SetParameters, f'{NAVIGATOR}/set_parameters')
+        self.ctrl_params = self.create_client(
+            SetParameters, f'{CONTROLLER}/set_parameters')
+        self.ctrl_get_params = self.create_client(
+            GetParameters, f'{CONTROLLER}/get_parameters')
         self.reset_lane = self.create_client(Trigger, f'{LOCALIZER}/reset_lane')
 
     # ------------------------------------------------------------------
@@ -496,6 +519,7 @@ class GreenhouseMission(Node):
             f'--> {leg}  [direct to controller, {len(path.poses)} poses, '
             f'{span:.1f} m, no planner]')
 
+
         goal = FollowPath.Goal()
         goal.path = path
         goal.controller_id = self.get_parameter('lane_controller').value
@@ -546,6 +570,43 @@ class GreenhouseMission(Node):
             + b.translation.y * math.cos(yaw)
         return (x, y)
 
+    def set_goal_tolerance(self, lane):
+        """Loosen the goal checker for a lane leg, tighten it for a turn."""
+        lane_xy = self.get_parameter('lane_xy_goal_tolerance').value
+        if lane_xy <= 0.0:
+            return
+        if self.turn_xy is None:
+            request = GetParameters.Request()
+            request.names = ['general_goal_checker.xy_goal_tolerance']
+            answer = self.call(self.ctrl_get_params, request)
+            if answer is None or not answer.values:
+                self.get_logger().warn('Could not read the goal tolerance; leaving it alone')
+                return
+            self.turn_xy = answer.values[0].double_value
+            self.get_logger().info(f'goal tolerance for turns is {self.turn_xy:.2f} m')
+        wanted = lane_xy if lane else self.turn_xy
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter('general_goal_checker.xy_goal_tolerance',
+                      Parameter.Type.DOUBLE, float(wanted)).to_parameter_msg()]
+        if self.call(self.ctrl_params, request) is None:
+            self.get_logger().warn('Could not set the goal tolerance')
+        else:
+            self.get_logger().info(f'goal tolerance {wanted:.2f} m for this leg')
+
+    def set_lane_steering(self, enabled):
+        """Let the lane controller steer by the measured lane, or not."""
+        plugin = self.get_parameter('lane_controller').value
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(f'{plugin}.use_lane', Parameter.Type.BOOL, enabled)
+            .to_parameter_msg()]
+        if self.call(self.ctrl_params, request) is None:
+            self.get_logger().warn(f'Could not set {plugin}.use_lane')
+        else:
+            self.get_logger().info(
+                f'Lane steering {"on" if enabled else "off"} for this leg')
+
     def select_controller(self, name):
         """Tell the behaviour tree which controller to drive the next leg with."""
         msg = String()
@@ -564,6 +625,9 @@ class GreenhouseMission(Node):
         behaviours are the same.
         """
         if self.nav2_available():
+            self.set_goal_tolerance(leg.lane)
+            if self.get_parameter('headland_ignores_lane').value:
+                self.set_lane_steering(leg.lane)
             if leg.lane:
                 # Anchor this lane, not the last one, before driving it.
                 if self.call(self.reset_lane, Trigger.Request()) is None:

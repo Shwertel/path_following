@@ -128,6 +128,29 @@ class RowLocalizerNode(Node):
         self.declare_parameter('min_span', 2.0)
         self.declare_parameter('max_heading_disagreement_deg', 25.0)
         self.declare_parameter('max_width_error', 0.5)
+        # Log every fit attempt, both sides, with the numbers each test is
+        # judged on. For diagnosing why a lane goes blind rather than for
+        # running: it prints about twenty lines a second.
+        self.declare_parameter('debug_fits', False)
+        # Hold the lane through a pivot. Measured over a sweep: with the rover
+        # still, 54/55 points land in the two search windows and 58% of fits
+        # are accepted; while pivoting the medians are 0 and 0 and only 18%
+        # are accepted, with 48 of 55 empty scans still carrying >20 points
+        # overall. The rows have not gone - the 87 degree wedge has swung off
+        # them and is looking across the lane instead. No gate change can
+        # recover a measurement that was never in view, and loosening the
+        # gates is what admits fits from the wrong structure.
+        #
+        # A pivot is the one case where predicting the lane is nearly free:
+        # the rover is turning in place, so the only thing changing is its
+        # heading, which the IMU knows well, and no dead-reckoned translation
+        # error accumulates. That is what separates this from carrying the
+        # lane through any dropout, which drove metres on odometry and was
+        # measurably worse.
+        self.declare_parameter('pivot_hold', True)
+        self.declare_parameter('pivot_omega', 0.15)
+        self.declare_parameter('pivot_hold_max_s', 2.5)
+        self.pivot_hold_since = None
 
         # A road's lane width is fixed; a greenhouse lane's is not. The stored
         # width follows the measured one at this rate per scan, so the width
@@ -182,6 +205,8 @@ class RowLocalizerNode(Node):
         self.road = None            # (cx, cy, phi, width)
         self.scans_used = 0
         self.scans_skipped = 0
+        self.last_theta = None      # for the yaw rate in the fit debug log
+        self.last_theta_t = None
 
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE)
@@ -237,17 +262,36 @@ class RowLocalizerNode(Node):
         r, a = ranges[keep], angles[keep]
         return np.column_stack((mx + r * np.cos(a), my + r * np.sin(a)))
 
-    def fit(self, points, beta_hint):
+    def fit(self, points, beta_hint, side=''):
         result = fit_line(points, beta_hint,
                           self.get_parameter('ransac_iterations').value,
                           self.get_parameter('ransac_threshold').value, self.rng)
+        debug = self.get_parameter('debug_fits').value
         if result is None:
+            if debug:
+                self.get_logger().info(
+                    f'FIT {side:5s} {len(points):4d} pts in window -> no line at all')
             return None
         beta, s, count, span, nearest = result
         max_disagreement = math.radians(self.get_parameter('max_heading_disagreement_deg').value)
-        if (count < self.get_parameter('min_inliers').value
-                or span < self.get_parameter('min_span').value
-                or abs(wrap(beta - beta_hint)) > max_disagreement):
+        min_inliers = self.get_parameter('min_inliers').value
+        min_span = self.get_parameter('min_span').value
+        off_hint = abs(wrap(beta - beta_hint))
+        bad = (count < min_inliers or span < min_span or off_hint > max_disagreement)
+        if debug:
+            why = []
+            if count < min_inliers:
+                why.append(f'inliers {count}<{min_inliers}')
+            if span < min_span:
+                why.append(f'span {span:.2f}<{min_span}')
+            if off_hint > max_disagreement:
+                why.append(f'off hint {math.degrees(off_hint):.1f}>'
+                           f'{math.degrees(max_disagreement):.1f} deg')
+            self.get_logger().info(
+                f'FIT {side:5s} {len(points):4d} pts, {count:3d} inliers, span {span:5.2f} m, '
+                f'off hint {math.degrees(off_hint):+6.1f} deg, at {s:+.3f} m -> '
+                f'{"REJECT: " + ", ".join(why) if bad else "ok"}')
+        if bad:
             return None
         return beta, s, nearest
 
@@ -329,15 +373,30 @@ class RowLocalizerNode(Node):
         v = np.array([math.cos(beta_pred), math.sin(beta_pred)])
         normal = np.array([-math.sin(beta_pred), math.cos(beta_pred)])
 
+        # Yaw rate, from this node's own successive headings: it decides
+        # whether a failed fit is a pivot worth holding through.
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        omega = 0.0
+        if self.last_theta is not None and stamp > self.last_theta_t:
+            omega = wrap(theta - self.last_theta) / (stamp - self.last_theta_t)
+        self.last_theta, self.last_theta_t = theta, stamp
+
         along = points @ v
         offset = points @ normal
         gate = self.get_parameter('gate_width').value
         in_window = ((along > self.get_parameter('along_window_min').value)
                      & (along < self.get_parameter('along_window_max').value))
-        left = self.fit(points[in_window & (np.abs(offset - (width / 2 - e_pred)) < gate)],
-                        beta_pred)
-        right = self.fit(points[in_window & (np.abs(offset - (-width / 2 - e_pred)) < gate)],
-                         beta_pred)
+        left_mask = in_window & (np.abs(offset - (width / 2 - e_pred)) < gate)
+        right_mask = in_window & (np.abs(offset - (-width / 2 - e_pred)) < gate)
+        if self.get_parameter('debug_fits').value:
+            self.get_logger().info(
+                f'SCAN omega {omega:+.3f} rad/s; {len(points):4d} pts, '
+                f'{int(in_window.sum()):4d} in the along window; '
+                f'lane width {width:.2f} m, predicted offset {e_pred:+.3f} m, gate +-{gate:.2f} m; '
+                f'windows centred {width / 2 - e_pred:+.2f} / {-width / 2 - e_pred:+.2f} m '
+                f'holding {int(left_mask.sum()):4d} / {int(right_mask.sum()):4d} pts')
+        left = self.fit(points[left_mask], beta_pred, 'left')
+        right = self.fit(points[right_mask], beta_pred, 'right')
 
         if left and right and abs((left[1] - right[1]) - width) > self.get_parameter('max_width_error').value:
             # The two fits disagree about the lane width, so one is wrong. Keep
@@ -373,6 +432,7 @@ class RowLocalizerNode(Node):
             inflation = self.get_parameter('single_row_inflation').value
         else:
             self.scans_skipped += 1
+            self.hold_through_pivot(msg, e_pred, beta_pred, pose, omega, stamp)
             return
         # A rover whose centre is further from the lane centre than half the
         # lane width is standing inside the plants. It is not; the measurement
@@ -382,9 +442,11 @@ class RowLocalizerNode(Node):
                 f'rejecting impossible offset {e:+.3f} m in a {width:.2f} m lane '
                 f'(rows={rows})', throttle_duration_sec=2.0)
             self.scans_skipped += 1
+            self.hold_through_pivot(msg, e_pred, beta_pred, pose, omega, stamp)
             return
 
         self.scans_used += 1
+        self.pivot_hold_since = None
 
         # Along the road: whatever the EKF believes. Across it: what the cars say.
         s_along = u[0] * (px - cx) + u[1] * (py - cy)
@@ -423,6 +485,35 @@ class RowLocalizerNode(Node):
         cov[35] = (math.radians(self.get_parameter('heading_std_deg').value) * inflation) ** 2
         out.pose.covariance = cov
         self.measurement_pub.publish(out)
+
+    def hold_through_pivot(self, msg, e_pred, beta_pred, pose, omega, stamp):
+        """Publish the lane the anchor predicts, but only while pivoting.
+
+        Only while pivoting, and only for pivot_hold_max_s: a rover turning in
+        place has not moved, so the predicted lane is as good as a measured
+        one. Standing still or driving, a failed fit means the rows really are
+        not where the anchor says, and inventing one would be the error this
+        node exists to avoid.
+        """
+        if not self.get_parameter('pivot_hold').value:
+            return
+        if abs(omega) < self.get_parameter('pivot_omega').value:
+            self.pivot_hold_since = None
+            return
+        if self.pivot_hold_since is None:
+            self.pivot_hold_since = stamp
+        held = stamp - self.pivot_hold_since
+        if held > self.get_parameter('pivot_hold_max_s').value:
+            self.get_logger().warn(
+                f'pivot hold expired after {held:.1f} s; letting the lane go',
+                throttle_duration_sec=2.0)
+            return
+        # The steering lane only. /row_pose is not published here: it feeds the
+        # EKF, and this value was derived from the EKF's own pose.
+        self.publish_lane(msg, e_pred, beta_pred, pose)
+        self.get_logger().info(
+            f'holding the lane through a pivot ({omega:+.2f} rad/s, {held:.1f} s)',
+            throttle_duration_sec=1.0)
 
     def publish_lane(self, msg, e, beta, pose):
         """The lane as measured at the rover right now, in odom.

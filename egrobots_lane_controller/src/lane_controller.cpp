@@ -52,6 +52,9 @@ void LaneController::configure(
   declare_parameter_if_not_declared(node, p("min_speed_fraction"), rclcpp::ParameterValue(0.4));
   declare_parameter_if_not_declared(node, p("lane_offset"), rclcpp::ParameterValue(0.0));
   declare_parameter_if_not_declared(node, p("lane_timeout"), rclcpp::ParameterValue(1.0));
+  // Whether to steer by the measured lane at all. Re-read every cycle, so
+  // the mission node can turn it off for the legs that are not lanes.
+  declare_parameter_if_not_declared(node, p("use_lane"), rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(node, p("lookahead_dist"), rclcpp::ParameterValue(0.6));
   declare_parameter_if_not_declared(
     node, p("lane_topic"), rclcpp::ParameterValue(std::string("/lane_centreline")));
@@ -72,6 +75,7 @@ void LaneController::configure(
   rotate_in_place_ = rotate_deg * M_PI / 180.0;
   node->get_parameter(p("lane_offset"), lane_offset_);
   node->get_parameter(p("lane_timeout"), lane_timeout_);
+  node->get_parameter(p("use_lane"), use_lane_);
   node->get_parameter(p("lookahead_dist"), lookahead_);
   node->get_parameter(p("lane_topic"), lane_topic_);
   align_tolerance_ = align_deg * M_PI / 180.0;
@@ -110,6 +114,16 @@ void LaneController::laneCallback(const geometry_msgs::msg::PoseStamped::SharedP
 
 bool LaneController::measuredLane(double & x, double & y, double & yaw)
 {
+  // Re-read rather than cache: a headland turn has no lane to steer by, and
+  // the last lane's measurement is anchored in odom, so it stays live and
+  // plausible for the whole of lane_timeout after the rover has stopped
+  // looking at the rows it came from - long enough to drag a turn sideways.
+  if (auto node = node_.lock()) {
+    node->get_parameter(plugin_name_ + ".use_lane", use_lane_);
+  }
+  if (!use_lane_) {
+    return false;
+  }
   if (!have_lane_) {
     return false;
   }
@@ -224,6 +238,24 @@ geometry_msgs::msg::TwistStamped LaneController::computeVelocityCommands(
   geometry_msgs::msg::TwistStamped cmd;
   cmd.header.frame_id = pose.header.frame_id;
   cmd.header.stamp = clock_->now();
+
+  // Re-read the two values an experiment wants to vary, so a config can be
+  // tested with a parameter set instead of a rebuild. Both are cheap lookups.
+  if (auto node = node_.lock()) {
+    node->get_parameter(plugin_name_ + ".cross_track_deadband", cross_track_deadband_);
+    node->get_parameter(plugin_name_ + ".lane_offset", lane_offset_);
+    // How hard it corrects, re-read so it can be tuned without a rebuild.
+    // The lane is 1.60 m of free corridor and the rover is 0.64 m wide, so
+    // there is 0.48 m of clearance a side: chasing the centreline to within a
+    // few centimetres buys nothing and costs a pivot every time.
+    double correction_deg = max_correction_ * 180.0 / M_PI;
+    double align_deg = align_tolerance_ * 180.0 / M_PI;
+    node->get_parameter(plugin_name_ + ".cross_track_kp", cross_track_kp_);
+    node->get_parameter(plugin_name_ + ".max_correction_deg", correction_deg);
+    node->get_parameter(plugin_name_ + ".align_tolerance_deg", align_deg);
+    max_correction_ = correction_deg * M_PI / 180.0;
+    align_tolerance_ = align_deg * M_PI / 180.0;
+  }
 
   const double rover_yaw = tf2::getYaw(pose.pose.orientation);
   double desired_heading = rover_yaw;
