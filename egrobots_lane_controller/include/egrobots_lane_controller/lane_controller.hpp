@@ -93,6 +93,9 @@ private:
   double lane_offset_{0.0};
   double lane_timeout_{1.0};
   bool use_lane_{true};                // false: steer by the plan only
+  double urgent_offset_{0.30};         // past this the rover is near a row
+  double urgent_cross_track_kp_{2.0};  // and corrects firmly, not gently
+  double urgent_max_correction_{0.873};// 50 degrees, the old cap
   double lookahead_{0.6};
   std::string lane_topic_{"/lane_centreline"};
 

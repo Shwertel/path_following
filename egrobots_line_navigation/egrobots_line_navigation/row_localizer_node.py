@@ -147,10 +147,28 @@ class RowLocalizerNode(Node):
         # error accumulates. That is what separates this from carrying the
         # lane through any dropout, which drove metres on odometry and was
         # measurably worse.
+        # A lane cannot teleport. The rows are 2.05 m apart, so a fit that
+        # lands on the WRONG PAIR implies a lane centre about a row pitch away
+        # from the last one - a jump, not a drift. Measured: with the rover
+        # straddling the row at y = +1.10, the localizer reported itself
+        # centred, offset -0.11 to +0.18 m, both rows fitted, and the
+        # controller held that false centre until the rover was 54 cm inside
+        # the plants.
+        #
+        # This compares a fit against the last ACCEPTED fit and nothing else.
+        # Two earlier versions compared against dead reckoning and against a
+        # seeded reference, and both failed the same way: the measurement is
+        # published to the EKF, so whatever it was checked against followed it
+        # within a second and the gate widened to admit exactly what it was
+        # meant to catch. The measurement's own history has no such path.
+        self.declare_parameter('max_offset_step', 0.30)
+        self.declare_parameter('offset_step_window', 2.0)
         self.declare_parameter('pivot_hold', True)
         self.declare_parameter('pivot_omega', 0.15)
         self.declare_parameter('pivot_hold_max_s', 2.5)
         self.pivot_hold_since = None
+        self.last_offset = None     # the last offset accepted this leg
+        self.last_offset_t = None
 
         # A road's lane width is fixed; a greenhouse lane's is not. The stored
         # width follows the measured one at this rate per scan, so the width
@@ -234,6 +252,7 @@ class RowLocalizerNode(Node):
         """
         self.road = None
         self.anchor_samples.clear()
+        self.last_offset = self.last_offset_t = None
         self.scans_used = self.scans_skipped = 0
         self.get_logger().info('Lane reset — waiting to anchor the next one')
         response.success = True
@@ -445,7 +464,12 @@ class RowLocalizerNode(Node):
             self.hold_through_pivot(msg, e_pred, beta_pred, pose, omega, stamp)
             return
 
+        if self.offset_jumped(e, stamp):
+            self.scans_skipped += 1
+            return
+
         self.scans_used += 1
+        self.last_offset, self.last_offset_t = e, stamp
         self.pivot_hold_since = None
 
         # Along the road: whatever the EKF believes. Across it: what the cars say.
@@ -485,6 +509,34 @@ class RowLocalizerNode(Node):
         cov[35] = (math.radians(self.get_parameter('heading_std_deg').value) * inflation) ** 2
         out.pose.covariance = cov
         self.measurement_pub.publish(out)
+
+    def offset_jumped(self, e, stamp):
+        """Did the measured lane just move further than a lane can?
+
+        Driving, the offset changes by centimetres a scan. Landing on the
+        wrong pair of rows moves it by most of a row pitch at once. Anything
+        past max_offset_step inside offset_step_window is the second kind and
+        is dropped: the controller follows the plan for that moment rather
+        than a lane one row across from the real one.
+
+        After the window with nothing accepted the next fit is taken however
+        far it has moved - the rover may legitimately have gone somewhere
+        while the rows were out of view, and refusing forever would strand it
+        on the plan for the rest of the leg.
+        """
+        if self.last_offset is None:
+            return False
+        gap = stamp - self.last_offset_t
+        if gap > self.get_parameter('offset_step_window').value:
+            return False
+        step = abs(e - self.last_offset)
+        if step <= self.get_parameter('max_offset_step').value:
+            return False
+        self.get_logger().warn(
+            f'rejecting a fit that moved the lane {step:.2f} m in {gap:.2f} s '
+            f'(offset {self.last_offset:+.3f} -> {e:+.3f} m): a lane does not move',
+            throttle_duration_sec=2.0)
+        return True
 
     def hold_through_pivot(self, msg, e_pred, beta_pred, pose, omega, stamp):
         """Publish the lane the anchor predicts, but only while pivoting.

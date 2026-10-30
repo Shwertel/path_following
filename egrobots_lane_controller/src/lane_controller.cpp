@@ -55,6 +55,14 @@ void LaneController::configure(
   // Whether to steer by the measured lane at all. Re-read every cycle, so
   // the mission node can turn it off for the legs that are not lanes.
   declare_parameter_if_not_declared(node, p("use_lane"), rclcpp::ParameterValue(true));
+  // Correcting gently keeps the pivot count down, and at 0.25 m of deadband
+  // with kp 0.8 the rover drifted to 46.8 cm of a 48 cm margin while the lane
+  // fit was perfectly good - it noticed, and then asked for 21 degrees, which
+  // was not enough. Past urgent_offset it stops being gentle: a lane that is
+  // nearly touching a plant is worth a pivot.
+  declare_parameter_if_not_declared(node, p("urgent_offset"), rclcpp::ParameterValue(0.30));
+  declare_parameter_if_not_declared(node, p("urgent_cross_track_kp"), rclcpp::ParameterValue(2.0));
+  declare_parameter_if_not_declared(node, p("urgent_max_correction_deg"), rclcpp::ParameterValue(50.0));
   declare_parameter_if_not_declared(node, p("lookahead_dist"), rclcpp::ParameterValue(0.6));
   declare_parameter_if_not_declared(
     node, p("lane_topic"), rclcpp::ParameterValue(std::string("/lane_centreline")));
@@ -253,6 +261,11 @@ geometry_msgs::msg::TwistStamped LaneController::computeVelocityCommands(
     node->get_parameter(plugin_name_ + ".cross_track_kp", cross_track_kp_);
     node->get_parameter(plugin_name_ + ".max_correction_deg", correction_deg);
     node->get_parameter(plugin_name_ + ".align_tolerance_deg", align_deg);
+    double urgent_deg = urgent_max_correction_ * 180.0 / M_PI;
+    node->get_parameter(plugin_name_ + ".urgent_offset", urgent_offset_);
+    node->get_parameter(plugin_name_ + ".urgent_cross_track_kp", urgent_cross_track_kp_);
+    node->get_parameter(plugin_name_ + ".urgent_max_correction_deg", urgent_deg);
+    urgent_max_correction_ = urgent_deg * M_PI / 180.0;
     max_correction_ = correction_deg * M_PI / 180.0;
     align_tolerance_ = align_deg * M_PI / 180.0;
   }
@@ -271,9 +284,17 @@ geometry_msgs::msg::TwistStamped LaneController::computeVelocityCommands(
     if (std::abs(cross) < cross_track_deadband_) {
       desired_heading = lyaw;
     } else {
-      const double correction =
-        std::clamp(-cross_track_kp_ * cross, -max_correction_, max_correction_);
+      const bool urgent = std::abs(cross) > urgent_offset_;
+      const double kp = urgent ? urgent_cross_track_kp_ : cross_track_kp_;
+      const double cap = urgent ? urgent_max_correction_ : max_correction_;
+      const double correction = std::clamp(-kp * cross, -cap, cap);
       desired_heading = lyaw + correction;
+      if (urgent) {
+        RCLCPP_WARN_THROTTLE(
+          logger_, *clock_, 2000,
+          "%s: %.2f m off the lane centre - correcting hard (%.0f deg)",
+          plugin_name_.c_str(), cross, correction * 180.0 / M_PI);
+      }
     }
     RCLCPP_INFO_THROTTLE(logger_, *clock_, 5000, "%s: steering by the measured lane",
                          plugin_name_.c_str());

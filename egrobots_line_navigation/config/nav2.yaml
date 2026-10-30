@@ -175,8 +175,10 @@ controller_server:
       # 10 cm trades a little lane accuracy for far fewer pivots.
       # The lane is 1.60 m of free corridor and the rover is 0.64 m wide, so
       # there is 0.48 m of clearance a side. Correcting at 10 cm bought
-      # precision nobody needs and cost a pivot each time: 47% of all motion
-      # was turning on the spot. At 0.25 m with the gains below it is 25%.
+      # precision nothing needs and cost a pivot each time: 47% of all motion
+      # was turning on the spot, against 25% here. Tightening them back made
+      # it worse, not better - 66% pivoting and a leg lost at 6.1 m - because
+      # a pivot is now also when the lane measurement is least trustworthy.
       cross_track_deadband: 0.25
       lane_offset: 0.0
       lane_timeout: 1.0

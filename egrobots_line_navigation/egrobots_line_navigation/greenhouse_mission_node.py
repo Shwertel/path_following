@@ -43,7 +43,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from geometry_msgs.msg import Point, PoseStamped
+from geometry_msgs.msg import Point, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Path
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.time import Time
@@ -168,6 +168,23 @@ class GreenhouseMission(Node):
         # width of a point. The turns keep the tight tolerance, which is where
         # the undershoot into the next lane actually matters. 0 disables it.
         self.declare_parameter('lane_xy_goal_tolerance', 0.60)
+        # Tell amcl which lane this is, at the start of every lane leg.
+        #
+        # The rows are self-similar and 2.05 m apart, so the scan from inside
+        # one lane explains a pose in the next one about as well. Measured
+        # during a lane 2 leg: the filter flickered between the true pose and
+        # one lane across - believed y +2.14 then +0.07 then +2.14 - and the
+        # along-lane estimate jumped up to 8 m with it. It starts at the lane
+        # mouth, where the headland pivot has just left the camera looking
+        # across the lane at a single row with nothing to fix it laterally.
+        #
+        # WHICH LANE the rover is driving is not a measurement: it is what the
+        # mission was told to do. That is the one fact in the system the camera
+        # and the filter cannot corrupt, so it is worth asserting. The lateral
+        # covariance is tight, the along-lane one is not - the leg knows which
+        # lane it is in, not where along it the rover has got to.
+        self.declare_parameter('reseed_amcl_on_lane', True)
+        self.last_yaw = None
         self.turn_xy = None         # the tolerance the server started with
 
         # What a failed leg means for the sweep is this node's decision. A lane
@@ -193,6 +210,8 @@ class GreenhouseMission(Node):
             SetParameters, f'{CONTROLLER}/set_parameters')
         self.ctrl_get_params = self.create_client(
             GetParameters, f'{CONTROLLER}/get_parameters')
+        self.initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10)
         self.reset_lane = self.create_client(Trigger, f'{LOCALIZER}/reset_lane')
 
     # ------------------------------------------------------------------
@@ -568,7 +587,47 @@ class GreenhouseMission(Node):
             - b.translation.y * math.sin(yaw)
         y = a.translation.y + b.translation.x * math.sin(yaw) \
             + b.translation.y * math.cos(yaw)
+        r = b.rotation
+        self.last_yaw = yaw + math.atan2(
+            2.0 * (r.w * r.z + r.x * r.y), 1.0 - 2.0 * (r.y * r.y + r.z * r.z))
         return (x, y)
+
+    def reseed_amcl(self, leg):
+        """Re-seed amcl at the lane this leg is driving.
+
+        Tight across the lane, loose along it: the plan knows which lane, not
+        how far down it the rover has got. If the rover entered the lane off
+        centre this asserts it did not, and that error is the turn's accuracy,
+        0.1 to 0.2 m - a tenth of the 2.05 m error it is there to remove.
+        """
+        if not self.get_parameter('reseed_amcl_on_lane').value:
+            return
+        here = self.where_am_i() or leg.start
+        # The rover's OWN heading, not the leg's. Seeding the leg's direction
+        # asserted a heading the rover had not turned to yet - at a lane leg's
+        # start it is still facing the way the headland turn left it - and amcl
+        # snapped the estimate through 160 degrees to satisfy it.
+        heading = self.last_yaw
+        if heading is None:
+            return
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = self.get_parameter('plan_frame').value
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose.position = Point(x=float(here[0]), y=float(leg.start[1]), z=0.0)
+        msg.pose.pose.orientation.z = math.sin(heading / 2.0)
+        msg.pose.pose.orientation.w = math.cos(heading / 2.0)
+        cov = [0.0] * 36
+        cov[0] = 0.25            # along the lane: half a metre, one sigma
+        cov[7] = 0.04            # across it: twenty centimetres
+        cov[35] = 0.07           # heading: about fifteen degrees, and the
+                                 # heading comes from the rover, not the plan
+        msg.pose.covariance = cov
+        self.initial_pose_pub.publish(msg)
+        self.get_logger().info(
+            f'told amcl this is the lane at y={leg.start[1]:+.2f} '
+            f'(x={here[0]:.2f}, keeping its heading {math.degrees(heading):+.0f} deg)')
+        for _ in range(5):       # let amcl take it before the leg starts
+            rclpy.spin_once(self, timeout_sec=0.1)
 
     def set_goal_tolerance(self, lane):
         """Loosen the goal checker for a lane leg, tighten it for a turn."""
@@ -625,6 +684,8 @@ class GreenhouseMission(Node):
         behaviours are the same.
         """
         if self.nav2_available():
+            if leg.lane or leg.name.startswith('turn into lane'):
+                self.reseed_amcl(leg)
             self.set_goal_tolerance(leg.lane)
             if self.get_parameter('headland_ignores_lane').value:
                 self.set_lane_steering(leg.lane)
